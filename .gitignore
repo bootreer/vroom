@@ -1,1 +1,9 @@
 /target
+Cargo.lock
+
+# rustfmt
+**/*.rs.bk
+
+# Jetbrains
+.idea/
+*.iml
