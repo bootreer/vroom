@@ -6,6 +6,8 @@ mod queues;
 mod memory;
 #[allow(dead_code)]
 mod nvme;
+#[allow(dead_code)]
+mod cmd;
 
 use self::pci::*;
 use std::error::Error;
