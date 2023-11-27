@@ -1,6 +1,8 @@
 #[allow(dead_code)]
 mod cmd;
 #[allow(dead_code)]
+mod consts;
+#[allow(dead_code)]
 mod memory;
 #[allow(dead_code)]
 mod nvme;

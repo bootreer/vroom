@@ -1,9 +1,10 @@
-use crate::{queues::*, pci::pci_map_resource};
+use crate::{pci::pci_map_resource, queues::*};
 use std::error::Error;
 
 #[allow(unused)]
 use crate::memory::Dma;
 
+// clippy doesnt like this
 #[allow(non_camel_case_types)]
 #[derive(Copy, Clone, Debug)]
 pub enum NvmeRegs32 {
@@ -39,7 +40,7 @@ pub enum NvmeRegs64 {
 
 #[allow(non_camel_case_types)]
 #[derive(Copy, Clone, Debug)]
-pub (crate) enum NvmeArrayRegs {
+pub(crate) enum NvmeArrayRegs {
     SQyTDBL,
     CQyHDBL,
 }
@@ -57,7 +58,7 @@ pub struct NvmeDevice {
 
 impl NvmeDevice {
     #[allow(unused)]
-    pub fn init(pci_addr: &str, ) -> Result<Self, Box<dyn Error>> {
+    pub fn init(pci_addr: &str) -> Result<Self, Box<dyn Error>> {
         let (addr, len) = pci_map_resource(pci_addr)?;
 
         // TODO: read bar data
@@ -66,9 +67,8 @@ impl NvmeDevice {
             pci_addr: pci_addr.to_string(),
             addr,
             len,
-            sub_queues: vec!(),
-            comp_queues: vec!(),
-
+            sub_queues: vec![],
+            comp_queues: vec![],
             // TODO: tmp
             // interrupt_method: InterruptMethod::MsiX(MsixCfg {}),
         };
@@ -76,16 +76,15 @@ impl NvmeDevice {
         // TODO: init admin queues
         let mut admin_sq = NvmeSubQueue::new()?;
         let mut admin_cq = NvmeCompQueue::new()?;
-    
+
         // test
-        dev.set_reg64(NvmeRegs64::ASQ as u32, admin_sq.get_addr() as u64); 
-        dev.set_reg64(NvmeRegs64::ACQ as u32, admin_cq.get_addr() as u64); 
+        dev.set_reg64(NvmeRegs64::ASQ as u32, admin_sq.get_addr() as u64);
+        dev.set_reg64(NvmeRegs64::ACQ as u32, admin_cq.get_addr() as u64);
 
         dev.sub_queues.push(admin_sq);
         dev.comp_queues.push(admin_cq);
 
         // TODO: init i/o queues
-
 
         Ok(dev)
     }
@@ -115,7 +114,6 @@ impl NvmeDevice {
             std::ptr::write_volatile((self.addr as usize + reg as usize) as *mut u64, value);
         }
     }
-
 }
 
 // I guess ignore interrupts?
