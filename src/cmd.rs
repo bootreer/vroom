@@ -38,7 +38,6 @@ impl NvmeCommand {
         qid: u16,
         ptr: usize,
         size: u16,
-        iv: Option<u16>,
     ) -> Self {
         const DW11_PHYSICALLY_CONTIGUOUS_BIT: u32 = 0x0000_0001;
         const DW11_ENABLE_INTERRUPTS_BIT: u32 = 0x0000_0002;
@@ -54,14 +53,7 @@ impl NvmeCommand {
             d_ptr: [ptr as u64, 0],
             cdw10: ((size as u32) << 16) | (qid as u32),
 
-            cdw11: DW11_PHYSICALLY_CONTIGUOUS_BIT
-                | if let Some(iv) = iv {
-                    // enable interrupts if a vector is present
-                    DW11_ENABLE_INTERRUPTS_BIT | (u32::from(iv) << DW11_INTERRUPT_VECTOR_SHIFT)
-                } else {
-                    0
-                },
-
+            cdw11: DW11_PHYSICALLY_CONTIGUOUS_BIT, // disable interrupts
             cdw12: 0,
             cdw13: 0,
             cdw14: 0,

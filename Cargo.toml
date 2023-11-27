@@ -8,3 +8,4 @@ edition = "2021"
 [dependencies]
 libc = "0.2"
 byteorder = "1"
+lazy_static = "1.4.0"

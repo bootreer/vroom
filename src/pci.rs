@@ -65,6 +65,8 @@ pub fn pci_map_resource(pci_addr: &str) -> Result<(*mut u8, usize), Box<dyn Erro
     }
 }
 
+// TODO: there must be a more concise way to write this
+
 /// Opens a pci resource file at the given address.
 pub fn pci_open_resource(pci_addr: &str, resource: &str) -> Result<File, Box<dyn Error>> {
     let path = format!("/sys/bus/pci/devices/{}/{}", pci_addr, resource);
@@ -95,6 +97,12 @@ pub fn read_io32(file: &mut File, offset: u64) -> Result<u32, io::Error> {
     file.read_u32::<NativeEndian>()
 }
 
+/// Writes an u64 at `offset` in `file`.
+pub fn read_io64(file: &mut File, offset: u64) -> Result<u64, io::Error> {
+    file.seek(SeekFrom::Start(offset))?;
+    file.read_u64::<NativeEndian>()
+}
+
 /// Writes an u8 at `offset` in `file`.
 pub fn write_io8(file: &mut File, value: u8, offset: u64) -> Result<(), io::Error> {
     file.seek(SeekFrom::Start(offset))?;
@@ -111,6 +119,12 @@ pub fn write_io16(file: &mut File, value: u16, offset: u64) -> Result<(), io::Er
 pub fn write_io32(file: &mut File, value: u32, offset: u64) -> Result<(), io::Error> {
     file.seek(SeekFrom::Start(offset))?;
     file.write_u32::<NativeEndian>(value)
+}
+
+/// Writes an u64 at `offset` in `file`.
+pub fn write_io64(file: &mut File, value: u64, offset: u64) -> Result<(), io::Error> {
+    file.seek(SeekFrom::Start(offset))?;
+    file.write_u64::<NativeEndian>(value)
 }
 
 /// Reads a hex string from `file` and returns it as `u64`.
