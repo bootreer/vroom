@@ -1,4 +1,8 @@
-use crate::{pci::pci_map_resource, queues::*};
+use crate::{
+    cmd::NvmeCommand,
+    pci::{pci_map_bar, pci_map_resource, PciResource},
+    queues::*,
+};
 use std::error::Error;
 
 #[allow(unused)]
@@ -49,44 +53,123 @@ pub struct NvmeDevice {
     pci_addr: String,
     addr: *mut u8,
     len: usize,
+    bar: PciResource,
+    // Doorbell stride
+    dstrd: u16,
+    admin_sq: NvmeSubQueue,
+    admin_cq: NvmeCompQueue,
     sub_queues: Vec<NvmeSubQueue>,
     comp_queues: Vec<NvmeCompQueue>,
     // namespaces: Vec<NvmeNamespace>
-    // interrupt_method: InterruptMethod
     // buffer: Dma<[u8; 2048 * 1024]>, // 2MiB of buffer
 }
 
 impl NvmeDevice {
-    #[allow(unused)]
     pub fn init(pci_addr: &str) -> Result<Self, Box<dyn Error>> {
         let (addr, len) = pci_map_resource(pci_addr)?;
+        let bar = pci_map_bar(pci_addr)?;
 
         // TODO: read bar data
+        // TODO: init admin queues
+        let admin_sq = NvmeSubQueue::new()?;
+        let admin_cq = NvmeCompQueue::new()?;
 
         let mut dev = Self {
             pci_addr: pci_addr.to_string(),
+            bar,
+            // fix
+            dstrd: 69,
             addr,
             len,
+            admin_sq,
+            admin_cq,
             sub_queues: vec![],
             comp_queues: vec![],
-            // TODO: tmp
-            // interrupt_method: InterruptMethod::MsiX(MsixCfg {}),
         };
 
-        // TODO: init admin queues
-        let mut admin_sq = NvmeSubQueue::new()?;
-        let mut admin_cq = NvmeCompQueue::new()?;
-
-        // test
-        dev.set_reg64(NvmeRegs64::ASQ as u32, admin_sq.get_addr() as u64);
-        dev.set_reg64(NvmeRegs64::ACQ as u32, admin_cq.get_addr() as u64);
-
-        dev.sub_queues.push(admin_sq);
-        dev.comp_queues.push(admin_cq);
+        {
+            dev.set_reg32(
+                NvmeRegs32::AQA as u32,
+                (QUEUE_LENGTH as u32 - 1) << 16 | (QUEUE_LENGTH as u32 - 1),
+            );
+            dev.set_reg64(NvmeRegs64::ASQ as u32, dev.admin_sq.get_addr() as u64);
+            dev.set_reg64(NvmeRegs64::ACQ as u32, dev.admin_cq.get_addr() as u64);
+        }
 
         // TODO: init i/o queues
 
         Ok(dev)
+    }
+
+    pub fn identify_controller(&mut self) -> Result<(), Box<dyn Error>> {
+        println!("trying to identify controller");
+        let buffer: Dma<[u8; 2048]> = Dma::allocate(2048, false)?;
+        {
+            let entry = NvmeCommand::identify_controller(self.admin_sq.tail as u16, buffer.phys);
+            let tail = self.admin_sq.submit(entry);
+            self.write_reg_idx(NvmeArrayRegs::SQyTDBL, 0, tail as u32);
+        }
+
+        println!("trying to retrieve completion for command");
+        {
+            let (head, entry, _) = self.admin_cq.complete_spin();
+            self.write_reg_idx(NvmeArrayRegs::CQyHDBL, 0, head as u32);
+        }
+
+        println!("dumping identify controller");
+
+        let mut serial = String::new();
+        let data = unsafe { *buffer.virt };
+
+        for &b in &data[4..24] {
+            if b == 0 {
+                break;
+            }
+            serial.push(b as char);
+        }
+
+        let mut model = String::new();
+        for &b in &data[24..64] {
+            if b == 0 {
+                break;
+            }
+            model.push(b as char);
+        }
+
+        let mut firmware = String::new();
+        for &b in &data[64..72] {
+            if b == 0 {
+                break;
+            }
+            firmware.push(b as char);
+        }
+
+        println!(
+            "  - Model: {} Serial: {} Firmware: {}",
+            model.trim(),
+            serial.trim(),
+            firmware.trim()
+        );
+
+        Ok(())
+    }
+
+
+    fn write_reg_idx(&self, reg: NvmeArrayRegs, qid: u16, val: u32) {
+        match reg {
+            NvmeArrayRegs::SQyTDBL => {
+                unsafe {
+                    std::ptr::write_volatile((self.bar.addr as usize + 0x1000 +
+                                         ((4 << self.dstrd) * (2 * qid)) as usize) as *mut u32, val);
+                }
+            },
+            NvmeArrayRegs::CQyHDBL => {
+                unsafe {
+                    std::ptr::write_volatile((self.bar.addr as usize + 0x1000 +
+                                         ((4 << self.dstrd) * (2 * qid + 1)) as usize) as *mut u32, val);
+                }
+            },
+        }
     }
 
     /// Sets the register at `self.addr` + `reg` to `value`.
@@ -95,10 +178,10 @@ impl NvmeDevice {
     ///
     /// Panics if `self.addr` + `reg` does not belong to the mapped memory of the pci device.
     fn set_reg32(&self, reg: u32, value: u32) {
-        assert!(reg as usize <= self.len - 4, "memory access out of bounds");
+        assert!(reg as usize <= self.bar.len - 4, "memory access out of bounds");
 
         unsafe {
-            std::ptr::write_volatile((self.addr as usize + reg as usize) as *mut u32, value);
+            std::ptr::write_volatile((self.bar.addr as usize + reg as usize) as *mut u32, value);
         }
     }
 
@@ -108,10 +191,10 @@ impl NvmeDevice {
     ///
     /// Panics if `self.addr` + `reg` does not belong to the mapped memory of the pci device.
     fn set_reg64(&self, reg: u32, value: u64) {
-        assert!(reg as usize <= self.len - 4, "memory access out of bounds");
+        assert!(reg as usize <= self.bar.len - 8, "memory access out of bounds");
 
         unsafe {
-            std::ptr::write_volatile((self.addr as usize + reg as usize) as *mut u64, value);
+            std::ptr::write_volatile((self.bar.addr as usize + reg as usize) as *mut u64, value);
         }
     }
 }

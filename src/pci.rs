@@ -6,10 +6,17 @@ use std::ptr;
 
 use byteorder::{NativeEndian, ReadBytesExt, WriteBytesExt};
 
+pub struct PciResource {
+    pub addr: *mut u8,
+    pub len: usize,
+}
+
 // write to the command register (offset 4) in the PCIe config space
 pub const COMMAND_REGISTER_OFFSET: u64 = 4;
-// bit 2 is "bus master enable", see PCIe 3.0 specification section 7.5.1.1
+// bit 2: "bus master enable", see PCIe 3.0 specification section 7.5.1.1
 pub const BUS_MASTER_ENABLE_BIT: u64 = 2;
+// bit 10: "interrupt disable"
+pub const INTERRUPT_DISABLE: u64 = 10;
 
 /// Unbinds the driver from the device at `pci_addr`.
 pub fn unbind_driver(pci_addr: &str) -> Result<(), Box<dyn Error>> {
@@ -37,12 +44,25 @@ pub fn enable_dma(pci_addr: &str) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// Disable INTx interrupts for the device at `pci_addr`.
+pub fn disable_interrupts(pci_addr: &str) -> Result<(), Box<dyn Error>> {
+    let path = format!("/sys/bus/pci/devices/{}/config", pci_addr);
+    let mut file = fs::OpenOptions::new().read(true).write(true).open(&path)?;
+
+    let mut dma = read_io16(&mut file, COMMAND_REGISTER_OFFSET)?;
+    dma |= 1 << INTERRUPT_DISABLE;
+    write_io16(&mut file, dma, COMMAND_REGISTER_OFFSET)?;
+
+    Ok(())
+}
+
 /// Mmaps a pci resource and returns a pointer to the mapped memory.
 pub fn pci_map_resource(pci_addr: &str) -> Result<(*mut u8, usize), Box<dyn Error>> {
     let path = format!("/sys/bus/pci/devices/{}/resource0", pci_addr);
 
     unbind_driver(pci_addr)?;
     enable_dma(pci_addr)?;
+    disable_interrupts(pci_addr)?;
 
     let file = fs::OpenOptions::new().read(true).write(true).open(&path)?;
     let len = fs::metadata(&path)?.len() as usize;
@@ -62,6 +82,30 @@ pub fn pci_map_resource(pci_addr: &str) -> Result<(*mut u8, usize), Box<dyn Erro
         Err("pci mapping failed".into())
     } else {
         Ok((ptr, len))
+    }
+}
+
+pub fn pci_map_bar(pci_addr: &str) -> Result<PciResource, Box<dyn Error>> {
+    let path = format!("/sys/bus/pci/devices/{}/config", pci_addr);
+
+    let file = fs::OpenOptions::new().read(true).write(true).open(&path)?;
+    let len = fs::metadata(&path)?.len() as usize;
+
+    let ptr = unsafe {
+        libc::mmap(
+            ptr::null_mut(),
+            len,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_SHARED,
+            file.as_raw_fd(),
+            0,
+        ) as *mut u8
+    };
+
+    if ptr.is_null() || len == 0 {
+        Err("pci mapping failed".into())
+    } else {
+        Ok(PciResource { addr: ptr, len })
     }
 }
 

@@ -35,8 +35,8 @@ pub fn init(pci_addr: &str) -> Result<(), Box<dyn Error>> {
     }
 
     // todo: init device
-    NvmeDevice::init(pci_addr);
-
+    let nvme = NvmeDevice::init(pci_addr)?;
+    nvme.identify_controller();
     Ok(())
 }
 

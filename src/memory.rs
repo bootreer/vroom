@@ -63,8 +63,8 @@ impl<T> Dma<T> {
                         ptr::null_mut(),
                         size,
                         libc::PROT_READ | libc::PROT_WRITE,
-                        // libc::MAP_SHARED | libc::MAP_HUGETLB,
-                        libc::MAP_SHARED, // cuz MAP_HUGETLB doesn't exist on macOS (for lsp lol)
+                        libc::MAP_SHARED | libc::MAP_HUGETLB,
+                        // libc::MAP_SHARED, // cuz MAP_HUGETLB doesn't exist on macOS (for lsp lol)
                         f.as_raw_fd(),
                         0,
                     )
