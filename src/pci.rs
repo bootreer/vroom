@@ -85,30 +85,6 @@ pub fn pci_map_resource(pci_addr: &str) -> Result<(*mut u8, usize), Box<dyn Erro
     }
 }
 
-pub fn pci_map_bar(pci_addr: &str) -> Result<PciResource, Box<dyn Error>> {
-    let path = format!("/sys/bus/pci/devices/{}/config", pci_addr);
-
-    let file = fs::OpenOptions::new().read(true).write(true).open(&path)?;
-    let len = fs::metadata(&path)?.len() as usize;
-
-    let ptr = unsafe {
-        libc::mmap(
-            ptr::null_mut(),
-            len,
-            libc::PROT_READ | libc::PROT_WRITE,
-            libc::MAP_SHARED,
-            file.as_raw_fd(),
-            0,
-        ) as *mut u8
-    };
-
-    if ptr.is_null() || len == 0 {
-        Err("pci mapping failed".into())
-    } else {
-        Ok(PciResource { addr: ptr, len })
-    }
-}
-
 // TODO: there must be a more concise way to write this
 
 /// Opens a pci resource file at the given address.

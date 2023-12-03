@@ -1,7 +1,6 @@
-use std::error::Error;
-use std::arch::asm;
 use crate::cmd::NvmeCommand;
 use crate::memory::*;
+use std::error::Error;
 
 /// NVMe spec 4.6
 /// Completion queue entry
@@ -28,15 +27,19 @@ pub const QUEUE_LENGTH: usize = 1024;
 /// Submission queue
 #[allow(dead_code)]
 pub struct NvmeSubQueue {
-    commands: Dma<[NvmeCommand; QUEUE_LENGTH]>,
+    pub commands: Dma<[NvmeCommand; QUEUE_LENGTH]>,
     head: usize,
     pub tail: usize,
 }
 
 impl NvmeSubQueue {
     pub fn new() -> Result<Self, Box<dyn Error>> {
+        let commands: Dma<[NvmeCommand; QUEUE_LENGTH]> = Dma::allocate(64 * QUEUE_LENGTH, false)?;
+        println!("[NSQ new()] {}", commands.phys);
+
         Ok(Self {
-            commands: Dma::allocate(64 * QUEUE_LENGTH, true)?,
+            // commands: Dma::allocate(64 * QUEUE_LENGTH, true)?,
+            commands,
             head: 0,
             tail: 0,
         })
@@ -52,7 +55,8 @@ impl NvmeSubQueue {
     #[allow(unused)]
     pub fn submit(&mut self, entry: NvmeCommand) -> usize {
         // TODO
-        unsafe { // seems legit
+        unsafe {
+            // seems legit
             (*self.commands.virt)[self.tail] = entry;
         }
         self.tail = (self.tail + 1) % QUEUE_LENGTH;
@@ -106,7 +110,9 @@ impl NvmeCompQueue {
             if let Some(val) = self.complete() {
                 return val;
             } else {
-                unsafe { asm!("pause") };
+                unsafe {
+                    super::pause();
+                };
             }
         }
     }

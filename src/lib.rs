@@ -1,3 +1,4 @@
+#![feature(stdsimd)]
 #[allow(dead_code)]
 mod cmd;
 #[allow(dead_code)]
@@ -16,6 +17,20 @@ use nvme::NvmeDevice;
 use self::pci::*;
 use std::error::Error;
 
+
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+pub(crate) unsafe fn pause() { std::arch::aarch64::__yield(); }
+
+#[cfg(target_arch = "x86")]
+#[inline(always)]
+pub(crate) unsafe fn pause() { std::arch::x86::_mm_pause(); }
+
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+pub(crate) unsafe fn pause() { std::arch::x86_64::_mm_pause(); }
+
+
 #[allow(unused)]
 pub fn init(pci_addr: &str) -> Result<(), Box<dyn Error>> {
     let mut vendor_file = pci_open_resource_ro(pci_addr, "vendor").expect("wrong pci address");
@@ -24,8 +39,7 @@ pub fn init(pci_addr: &str) -> Result<(), Box<dyn Error>> {
 
     let vendor_id = read_hex(&mut vendor_file)?;
     let device_id = read_hex(&mut device_file)?;
-    let class_id = read_io32(&mut config_file, 8)? >> 8;
-
+    let class_id = read_io32(&mut config_file, 8)? >> 16;
     println!("{:X}", class_id);
 
     // 0x01 -> mass storage device class id
@@ -35,7 +49,9 @@ pub fn init(pci_addr: &str) -> Result<(), Box<dyn Error>> {
     }
 
     // todo: init device
-    let nvme = NvmeDevice::init(pci_addr)?;
+    let mut nvme = NvmeDevice::init(pci_addr)?;
+    println!("init worked i guess");
+
     nvme.identify_controller();
     Ok(())
 }

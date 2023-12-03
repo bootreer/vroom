@@ -7,3 +7,6 @@ Cargo.lock
 # Jetbrains
 .idea/
 *.iml
+
+# misc
+.DS_Store

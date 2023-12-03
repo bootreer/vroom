@@ -27,7 +27,6 @@ lazy_static! {
         Mutex::new(HashMap::new());
 }
 
-
 pub struct Dma<T> {
     pub virt: *mut T,
     pub phys: usize,
@@ -121,8 +120,7 @@ impl Mempool {
         let mut phys_addresses = Vec::with_capacity(entries);
 
         for i in 0..entries {
-            phys_addresses
-                .push(unsafe { virt_to_phys(dma.virt.add(i * entry_size) as usize)? });
+            phys_addresses.push(unsafe { virt_to_phys(dma.virt.add(i * entry_size) as usize)? });
         }
 
         let pool = Mempool {
