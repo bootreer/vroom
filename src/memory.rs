@@ -14,7 +14,7 @@ use std::{fs, mem, process, ptr};
 const X86_VA_WIDTH: u8 = 47;
 
 const HUGE_PAGE_BITS: u32 = 21;
-const HUGE_PAGE_SIZE: usize = 1 << HUGE_PAGE_BITS;
+pub const HUGE_PAGE_SIZE: usize = 1 << HUGE_PAGE_BITS;
 
 pub const IOVA_WIDTH: u8 = X86_VA_WIDTH;
 
@@ -162,7 +162,7 @@ pub(crate) fn virt_to_phys(addr: usize) -> Result<usize, Box<dyn Error>> {
     file.read_exact(&mut buffer)?;
 
     let phys = unsafe { mem::transmute::<[u8; mem::size_of::<usize>()], usize>(buffer) };
-    Ok((phys & 0x007F_FFFF_FFFF_FFFF) * pagesize + addr & pagesize)
+    Ok((phys & 0x007F_FFFF_FFFF_FFFF) * pagesize + addr % pagesize)
 }
 
 #[allow(unused)]

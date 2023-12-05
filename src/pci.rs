@@ -6,11 +6,6 @@ use std::ptr;
 
 use byteorder::{NativeEndian, ReadBytesExt, WriteBytesExt};
 
-pub struct PciResource {
-    pub addr: *mut u8,
-    pub len: usize,
-}
-
 // write to the command register (offset 4) in the PCIe config space
 pub const COMMAND_REGISTER_OFFSET: u64 = 4;
 // bit 2: "bus master enable", see PCIe 3.0 specification section 7.5.1.1

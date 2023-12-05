@@ -2,6 +2,8 @@ use crate::cmd::NvmeCommand;
 use crate::memory::*;
 use std::error::Error;
 
+static mut PRINT: bool = true;
+
 /// NVMe spec 4.6
 /// Completion queue entry
 #[allow(dead_code)]
@@ -34,12 +36,11 @@ pub struct NvmeSubQueue {
 
 impl NvmeSubQueue {
     pub fn new() -> Result<Self, Box<dyn Error>> {
-        let commands: Dma<[NvmeCommand; QUEUE_LENGTH]> = Dma::allocate(64 * QUEUE_LENGTH, false)?;
-        println!("[NSQ new()] {}", commands.phys);
+        // let commands: Dma<[NvmeCommand; QUEUE_LENGTH]> = Dma::allocate(64 * QUEUE_LENGTH, false)?;
 
         Ok(Self {
             // commands: Dma::allocate(64 * QUEUE_LENGTH, true)?,
-            commands,
+            commands: Dma::allocate(crate::memory::HUGE_PAGE_SIZE, false)?,
             head: 0,
             tail: 0,
         })
@@ -54,6 +55,7 @@ impl NvmeSubQueue {
 
     #[allow(unused)]
     pub fn submit(&mut self, entry: NvmeCommand) -> usize {
+        println!("SUBMISSION ENTRY: {:?}", entry);
         // TODO
         unsafe {
             // seems legit
@@ -79,17 +81,14 @@ pub struct NvmeCompQueue {
 impl NvmeCompQueue {
     pub fn new() -> Result<Self, Box<dyn Error>> {
         Ok(Self {
-            commands: Dma::allocate(16 * QUEUE_LENGTH, true)?,
+            commands: Dma::allocate(crate::memory::HUGE_PAGE_SIZE, false)?,
             head: 0,
             phase: true,
         })
     }
 
     pub fn complete(&mut self) -> Option<(usize, NvmeCompletion, usize)> {
-        let entry = unsafe {
-            // std::ptr::read_volatile(self.commands.virt);
-            (*self.commands.virt)[self.head]
-        };
+        let entry: NvmeCompletion = unsafe { (*self.commands.virt)[self.head] };
 
         if ((entry.status & 1) == 1) == self.phase {
             let prev = self.head;
@@ -98,7 +97,7 @@ impl NvmeCompQueue {
                 self.phase = !self.phase;
             }
 
-            println!("comp entry ==> {:?}", entry);
+            println!("COMPLETION ENTRY: {:?}", entry);
             Some((self.head, entry, prev))
         } else {
             None

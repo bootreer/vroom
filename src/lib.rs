@@ -17,19 +17,23 @@ use nvme::NvmeDevice;
 use self::pci::*;
 use std::error::Error;
 
-
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
-pub(crate) unsafe fn pause() { std::arch::aarch64::__yield(); }
+pub(crate) unsafe fn pause() {
+    std::arch::aarch64::__yield();
+}
 
 #[cfg(target_arch = "x86")]
 #[inline(always)]
-pub(crate) unsafe fn pause() { std::arch::x86::_mm_pause(); }
+pub(crate) unsafe fn pause() {
+    std::arch::x86::_mm_pause();
+}
 
 #[cfg(target_arch = "x86_64")]
 #[inline(always)]
-pub(crate) unsafe fn pause() { std::arch::x86_64::_mm_pause(); }
-
+pub(crate) unsafe fn pause() {
+    std::arch::x86_64::_mm_pause();
+}
 
 #[allow(unused)]
 pub fn init(pci_addr: &str) -> Result<(), Box<dyn Error>> {
@@ -50,46 +54,10 @@ pub fn init(pci_addr: &str) -> Result<(), Box<dyn Error>> {
 
     // todo: init device
     let mut nvme = NvmeDevice::init(pci_addr)?;
-    println!("init worked i guess");
 
     nvme.identify_controller();
     Ok(())
 }
-
-/*
-#[repr(packed)]
-pub struct NvmeRegs {
-    /// Controller Capabilities
-    cap_low: Mmio<u32>,
-    cap_high: Mmio<u32>,
-    /// Version
-    vs: Mmio<u32>,
-    /// Interrupt mask set
-    intms: Mmio<u32>,
-    /// Interrupt mask clear
-    intmc: Mmio<u32>,
-    /// Controller configuration
-    cc: Mmio<u32>,
-    /// Reserved
-    _rsvd: Mmio<u32>,
-    /// Controller status
-    csts: Mmio<u32>,
-    /// NVM subsystem reset
-    nssr: Mmio<u32>,
-    /// Admin queue attributes
-    aqa: Mmio<u32>,
-    /// Admin submission queue base address
-    asq_low: Mmio<u32>,
-    asq_high: Mmio<u32>,
-    /// Admin completion queue base address
-    acq_low: Mmio<u32>,
-    acq_high: Mmio<u32>,
-    /// Controller memory buffer location
-    cmbloc: Mmio<u32>,
-    /// Controller memory buffer size
-    cmbsz: Mmio<u32>,
-}
- */
 
 #[derive(Debug)]
 pub struct NvmeNamespace {
