@@ -1,6 +1,5 @@
 /// NVMe Spec 4.2
 /// Submission queue entry
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Default)]
 #[repr(packed)]
 pub struct NvmeCommand {
@@ -33,16 +32,7 @@ pub struct NvmeCommand {
 }
 
 impl NvmeCommand {
-    pub fn create_io_completion_queue(
-        c_id: u16,
-        qid: u16,
-        ptr: usize,
-        size: u16,
-    ) -> Self {
-        const DW11_PHYSICALLY_CONTIGUOUS_BIT: u32 = 0x0000_0001;
-        const DW11_ENABLE_INTERRUPTS_BIT: u32 = 0x0000_0002;
-        const DW11_INTERRUPT_VECTOR_SHIFT: u8 = 16;
-
+    pub fn create_io_completion_queue(c_id: u16, qid: u16, ptr: usize, size: u16) -> Self {
         Self {
             opcode: 5,
             flags: 0,
@@ -52,8 +42,7 @@ impl NvmeCommand {
             md_ptr: 0,
             d_ptr: [ptr as u64, 0],
             cdw10: ((size as u32) << 16) | (qid as u32),
-
-            cdw11: DW11_PHYSICALLY_CONTIGUOUS_BIT, // disable interrupts
+            cdw11: 1, // Physically Contiguous
             cdw12: 0,
             cdw13: 0,
             cdw14: 0,
@@ -186,5 +175,3 @@ impl NvmeCommand {
         }
     }
 }
-
-

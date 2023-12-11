@@ -1,12 +1,13 @@
-use crate::{cmd::NvmeCommand, pci::pci_map_resource, queues::*};
+use crate::cmd::NvmeCommand;
+use crate::memory::Dma;
+use crate::pci::pci_map_resource;
+use crate::queues::*;
+use crate::NvmeNamespace;
 use libc::pause;
 use std::error::Error;
 
-#[allow(unused)]
-use crate::memory::Dma;
-
 // clippy doesnt like this
-#[allow(non_camel_case_types)]
+#[allow(non_camel_case_types, unused)]
 #[derive(Copy, Clone, Debug)]
 pub enum NvmeRegs32 {
     VS = 0x8,        // Version
@@ -29,7 +30,7 @@ pub enum NvmeRegs32 {
     PMRSWTP = 0xE10, // PMem Sustained Write Throughput
 }
 
-#[allow(non_camel_case_types)]
+#[allow(non_camel_case_types, unused)]
 #[derive(Copy, Clone, Debug)]
 pub enum NvmeRegs64 {
     CAP = 0x0,      // Controller Capabilities
@@ -46,6 +47,50 @@ pub(crate) enum NvmeArrayRegs {
     CQyHDBL,
 }
 
+// who tf is abbreviating this stuff
+#[repr(packed)]
+#[derive(Debug, Clone, Copy)]
+#[allow(unused)]
+struct IdentifyNamespaceData {
+    pub nsze: u64,
+    pub ncap: u64,
+    nuse: u64,
+    nsfeat: u8,
+    pub nlbaf: u8,
+    pub flbas: u8,
+    mc: u8,
+    dpc: u8,
+    dps: u8,
+    nmic: u8,
+    rescap: u8,
+    fpi: u8,
+    dlfeat: u8,
+    nawun: u16,
+    nawupf: u16,
+    nacwu: u16,
+    nabsn: u16,
+    nabo: u16,
+    nabspf: u16,
+    noiob: u16,
+    nvmcap: u128,
+    npwg: u16,
+    npwa: u16,
+    npdg: u16,
+    npda: u16,
+    nows: u16,
+    _rsvd1: [u8; 18],
+    anagrpid: u32,
+    _rsvd2: [u8; 3],
+    nsattr: u8,
+    nvmsetid: u16,
+    endgid: u16,
+    nguid: [u8; 16],
+    eui64: u64,
+    pub lba_format_support: [u32; 16],
+    _rsvd3: [u8; 192],
+    vendor_specific: [u8; 3712],
+}
+
 pub struct NvmeDevice {
     pci_addr: String,
     addr: *mut u8,
@@ -56,14 +101,14 @@ pub struct NvmeDevice {
     admin_cq: NvmeCompQueue,
     sub_queues: Vec<NvmeSubQueue>,
     comp_queues: Vec<NvmeCompQueue>,
-    // namespaces: Vec<NvmeNamespace>
-    // buffer: Dma<[u8; 2048 * 1024]>, // 2MiB of buffer
+    buffer: Dma<[u8; 2048 * 1024]>, // 2MiB of buffer
+    namespaces: Vec<NvmeNamespace>,
 }
 
 impl NvmeDevice {
     pub fn init(pci_addr: &str) -> Result<Self, Box<dyn Error>> {
         let (addr, len) = pci_map_resource(pci_addr)?;
-        let mut dev = Self {
+        let dev = Self {
             pci_addr: pci_addr.to_string(),
             addr,
             dstrd: {
@@ -74,12 +119,13 @@ impl NvmeDevice {
                         & 0b1111) as u16
                 }
             },
-
             len,
             admin_sq: NvmeSubQueue::new()?,
             admin_cq: NvmeCompQueue::new()?,
             sub_queues: vec![],
             comp_queues: vec![],
+            buffer: Dma::allocate(crate::memory::HUGE_PAGE_SIZE, true)?,
+            namespaces: vec![],
         };
 
         println!("CAP: 0x{:x}", dev.get_reg64(NvmeRegs64::CAP as u64));
@@ -116,7 +162,7 @@ impl NvmeDevice {
         let mut cc = dev.get_reg32(NvmeRegs32::CC as u32);
         // mask out reserved stuff
         cc &= 0xFF00_000F;
-        // Set Competion and Submission entry sizes
+        // Set Completion (2^4 = 16 Bytes) and Submission Entry (2^6 = 64 Bytes) sizes
         cc |= (4 << 20) | (6 << 16);
         dev.set_reg32(NvmeRegs32::CC as u32, cc);
 
@@ -136,30 +182,17 @@ impl NvmeDevice {
                 break;
             }
         }
-        // TODO: init i/o queues
-
         Ok(dev)
     }
 
     pub fn identify_controller(&mut self) -> Result<(), Box<dyn Error>> {
-        println!("trying to identify controller");
-        let buffer: Dma<[u8; 2048]> = Dma::allocate(crate::memory::HUGE_PAGE_SIZE, false)?;
-        {
-            let entry = NvmeCommand::identify_controller(self.admin_sq.tail as u16, buffer.phys);
-            let tail = self.admin_sq.submit(entry);
-            self.write_reg_idx(NvmeArrayRegs::SQyTDBL, 0, tail as u32);
-        }
+        println!("Trying to identify controller");
+        let _entry =
+            self.submit_and_complete_admin(|c_id, ptr| NvmeCommand::identify_controller(c_id, ptr));
 
-        println!("trying to retrieve completion for command");
-        {
-            let (head, entry, _) = self.admin_cq.complete_spin();
-            self.write_reg_idx(NvmeArrayRegs::CQyHDBL, 0, head as u32);
-        }
-
-        println!("dumping identify controller");
-
+        println!("Dumping identify controller");
         let mut serial = String::new();
-        let data = unsafe { *buffer.virt };
+        let data = unsafe { *self.buffer.virt };
 
         for &b in &data[4..24] {
             if b == 0 {
@@ -194,7 +227,101 @@ impl NvmeDevice {
         Ok(())
     }
 
+    pub fn create_io_queue_pair(&mut self) -> Result<(), Box<dyn Error>> {
+        println!("Requesting i/o completion queue");
+        let cq_id = self.comp_queues.len();
+        let queue = NvmeCompQueue::new()?;
+        self.submit_and_complete_admin(|c_id, _| {
+            NvmeCommand::create_io_completion_queue(
+                c_id,
+                cq_id as u16,
+                queue.get_addr(),
+                (QUEUE_LENGTH - 1) as u16,
+            )
+        });
+        self.comp_queues.push(queue);
+
+        println!("Requesting i/o submission queue");
+        let queue = NvmeSubQueue::new()?;
+        let q_id = self.sub_queues.len();
+        self.submit_and_complete_admin(|c_id, _| {
+            NvmeCommand::create_io_submission_queue(
+                c_id,
+                q_id as u16,
+                queue.get_addr(),
+                (QUEUE_LENGTH - 1) as u16,
+                cq_id as u16,
+            )
+        });
+        self.sub_queues.push(queue);
+
+        Ok(())
+    }
+
+    pub fn identify_namespace_list(&mut self, base: u32) -> Vec<u32> {
+        self.submit_and_complete_admin(|c_id, addr| {
+            NvmeCommand::identify_namespace_list(c_id, addr, base)
+        });
+
+        // TODO: idk bout this/don't hardcode len
+        let data: &[u32] =
+            unsafe { std::slice::from_raw_parts(self.buffer.virt as *const u32, 1024) };
+
+        data.iter()
+            .copied()
+            .take_while(|&id| id != 0)
+            .collect::<Vec<u32>>()
+    }
+
+    pub fn identify_namespace(&mut self, id: u32) -> NvmeNamespace {
+        // TODO: use self.buffer
+        let tmp_buff: Dma<IdentifyNamespaceData> =
+            Dma::allocate(std::mem::size_of::<IdentifyNamespaceData>(), true).unwrap();
+
+        self.submit_and_complete_admin(|c_id, _| {
+            NvmeCommand::identify_namespace(c_id, tmp_buff.phys, id)
+        });
+
+        let namespace_data = unsafe { *tmp_buff.virt };
+        let size = namespace_data.nsze;
+        let blocks = namespace_data.ncap;
+
+        // figure out block size
+        let flba_idx = (namespace_data.flbas & 0xF) as usize;
+        let flba_data = (namespace_data.lba_format_support[flba_idx] >> 16) & 0xFF;
+        let block_size = if flba_data < 9 || flba_data >= 32 {
+            0
+        } else {
+            1 << flba_data
+        };
+
+        // TODO: check metadata?
+
+        println!("Namespace {id}, Size: {size}, Blocks: {blocks}, Block size: {block_size}");
+
+        NvmeNamespace {
+            id,
+            blocks,
+            block_size,
+        }
+    }
+
+    pub fn submit_and_complete_admin<F: FnOnce(u16, usize) -> NvmeCommand>(
+        &mut self,
+        cmd_init: F,
+    ) -> NvmeCompletion {
+        let cid = self.admin_sq.tail;
+        let tail = self.admin_sq.submit(cmd_init(cid as u16, self.buffer.phys));
+        self.write_reg_idx(NvmeArrayRegs::SQyTDBL, 0, tail as u32);
+
+        let (head, entry, _) = self.admin_cq.complete_spin();
+        self.write_reg_idx(NvmeArrayRegs::CQyHDBL, 0, head as u32);
+        entry
+    }
+
+    /// Sets Queue `qid` Tail Doorbell to `val`
     fn write_reg_idx(&self, reg: NvmeArrayRegs, qid: u16, val: u32) {
+        // TODO: catch invalid qid i guess
         match reg {
             NvmeArrayRegs::SQyTDBL => unsafe {
                 std::ptr::write_volatile(
@@ -261,19 +388,3 @@ impl NvmeDevice {
         unsafe { std::ptr::read_volatile((self.addr as usize + reg as usize) as *mut u64) }
     }
 }
-
-// I guess ignore interrupts?
-/// The way interrupts are sent. Unlike other PCI-based interfaces, like XHCI, it doesn't seem like
-/// NVME supports operating with interrupts completely disabled.
-pub enum InterruptMethod {
-    /// Traditional level-triggered, INTx# interrupt pins.
-    Intx,
-    /// Message signaled interrupts
-    Msi(MsiCapability),
-    /// Extended message signaled interrupts
-    MsiX(MsixCfg),
-}
-
-// TODO: tmp
-pub struct MsiCapability {}
-pub struct MsixCfg {}

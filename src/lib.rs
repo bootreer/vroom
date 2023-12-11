@@ -1,11 +1,6 @@
 #![feature(stdsimd)]
-#[allow(dead_code)]
 mod cmd;
-#[allow(dead_code)]
-mod consts;
-#[allow(dead_code)]
 mod memory;
-#[allow(dead_code)]
 mod nvme;
 #[allow(dead_code)]
 mod pci;
@@ -35,14 +30,13 @@ pub(crate) unsafe fn pause() {
     std::arch::x86_64::_mm_pause();
 }
 
-#[allow(unused)]
 pub fn init(pci_addr: &str) -> Result<(), Box<dyn Error>> {
     let mut vendor_file = pci_open_resource_ro(pci_addr, "vendor").expect("wrong pci address");
     let mut device_file = pci_open_resource_ro(pci_addr, "device").expect("wrong pci address");
     let mut config_file = pci_open_resource_ro(pci_addr, "config").expect("wrong pci address");
 
-    let vendor_id = read_hex(&mut vendor_file)?;
-    let device_id = read_hex(&mut device_file)?;
+    let _vendor_id = read_hex(&mut vendor_file)?;
+    let _device_id = read_hex(&mut device_file)?;
     let class_id = read_io32(&mut config_file, 8)? >> 16;
     println!("{:X}", class_id);
 
@@ -55,7 +49,14 @@ pub fn init(pci_addr: &str) -> Result<(), Box<dyn Error>> {
     // todo: init device
     let mut nvme = NvmeDevice::init(pci_addr)?;
 
-    nvme.identify_controller();
+    nvme.identify_controller()?;
+    nvme.create_io_queue_pair()?;
+    let ns = nvme.identify_namespace_list(0);
+
+    for n in ns {
+        println!("ns_id: {n}");
+        nvme.identify_namespace(n);
+    }
     Ok(())
 }
 
