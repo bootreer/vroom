@@ -1,5 +1,8 @@
 #![feature(stdsimd)]
+
+#[allow(unused)]
 mod cmd;
+#[allow(dead_code)]
 mod memory;
 mod nvme;
 #[allow(dead_code)]
@@ -57,10 +60,11 @@ pub fn init(pci_addr: &str) -> Result<(), Box<dyn Error>> {
         println!("ns_id: {n}");
         nvme.identify_namespace(n);
     }
+    nvme.read(1, 10);
     Ok(())
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct NvmeNamespace {
     pub id: u32,
     pub blocks: u64,

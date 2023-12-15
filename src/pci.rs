@@ -80,8 +80,6 @@ pub fn pci_map_resource(pci_addr: &str) -> Result<(*mut u8, usize), Box<dyn Erro
     }
 }
 
-// TODO: there must be a more concise way to write this
-
 /// Opens a pci resource file at the given address.
 pub fn pci_open_resource(pci_addr: &str, resource: &str) -> Result<File, Box<dyn Error>> {
     let path = format!("/sys/bus/pci/devices/{}/{}", pci_addr, resource);

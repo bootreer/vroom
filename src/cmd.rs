@@ -151,7 +151,7 @@ impl NvmeCommand {
             cdw10: lba as u32,
             cdw11: (lba >> 32) as u32,
             cdw12: blocks_1 as u32,
-            cdw13: 0,
+            cdw13: 0, // TODO?
             cdw14: 0,
             cdw15: 0,
         }

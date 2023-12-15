@@ -4,6 +4,7 @@ use crate::pci::pci_map_resource;
 use crate::queues::*;
 use crate::NvmeNamespace;
 use libc::pause;
+use std::collections::HashMap;
 use std::error::Error;
 
 // clippy doesnt like this
@@ -91,6 +92,7 @@ struct IdentifyNamespaceData {
     vendor_specific: [u8; 3712],
 }
 
+#[allow(unused)]
 pub struct NvmeDevice {
     pci_addr: String,
     addr: *mut u8,
@@ -99,10 +101,11 @@ pub struct NvmeDevice {
     dstrd: u16,
     admin_sq: NvmeSubQueue,
     admin_cq: NvmeCompQueue,
+    // maybe map?
     sub_queues: Vec<NvmeSubQueue>,
     comp_queues: Vec<NvmeCompQueue>,
     buffer: Dma<[u8; 2048 * 1024]>, // 2MiB of buffer
-    namespaces: Vec<NvmeNamespace>,
+    namespaces: HashMap<u32, NvmeNamespace>,
 }
 
 impl NvmeDevice {
@@ -125,7 +128,7 @@ impl NvmeDevice {
             sub_queues: vec![],
             comp_queues: vec![],
             buffer: Dma::allocate(crate::memory::HUGE_PAGE_SIZE, true)?,
-            namespaces: vec![],
+            namespaces: HashMap::new(),
         };
 
         println!("CAP: 0x{:x}", dev.get_reg64(NvmeRegs64::CAP as u64));
@@ -229,9 +232,9 @@ impl NvmeDevice {
 
     pub fn create_io_queue_pair(&mut self) -> Result<(), Box<dyn Error>> {
         println!("Requesting i/o completion queue");
-        let cq_id = self.comp_queues.len();
+        let cq_id = self.comp_queues.len() + 1;
         let queue = NvmeCompQueue::new()?;
-        self.submit_and_complete_admin(|c_id, _| {
+        let comp = self.submit_and_complete_admin(|c_id, _| {
             NvmeCommand::create_io_completion_queue(
                 c_id,
                 cq_id as u16,
@@ -239,12 +242,17 @@ impl NvmeDevice {
                 (QUEUE_LENGTH - 1) as u16,
             )
         });
+        let status = comp.status;
+        if status >> 1 != 0 {
+            println!("something went awry: 0x{:x}", status)
+        }
+
         self.comp_queues.push(queue);
 
         println!("Requesting i/o submission queue");
         let queue = NvmeSubQueue::new()?;
-        let q_id = self.sub_queues.len();
-        self.submit_and_complete_admin(|c_id, _| {
+        let q_id = self.sub_queues.len() + 1;
+        let comp = self.submit_and_complete_admin(|c_id, _| {
             NvmeCommand::create_io_submission_queue(
                 c_id,
                 q_id as u16,
@@ -253,6 +261,11 @@ impl NvmeDevice {
                 cq_id as u16,
             )
         });
+        let status = comp.status;
+        if status >> 1 != 0 {
+            println!("something went awry: 0x{:x}", status)
+        }
+
         self.sub_queues.push(queue);
 
         Ok(())
@@ -274,15 +287,14 @@ impl NvmeDevice {
     }
 
     pub fn identify_namespace(&mut self, id: u32) -> NvmeNamespace {
-        // TODO: use self.buffer
-        let tmp_buff: Dma<IdentifyNamespaceData> =
-            Dma::allocate(std::mem::size_of::<IdentifyNamespaceData>(), true).unwrap();
-
-        self.submit_and_complete_admin(|c_id, _| {
-            NvmeCommand::identify_namespace(c_id, tmp_buff.phys, id)
+        self.submit_and_complete_admin(|c_id, addr| {
+            NvmeCommand::identify_namespace(c_id, addr, id)
         });
 
-        let namespace_data = unsafe { *tmp_buff.virt };
+        let namespace_data: IdentifyNamespaceData =
+            unsafe { *(self.buffer.virt as *const IdentifyNamespaceData) };
+
+        // let namespace_data = unsafe { *tmp_buff.virt };
         let size = namespace_data.nsze;
         let blocks = namespace_data.ncap;
 
@@ -299,11 +311,60 @@ impl NvmeDevice {
 
         println!("Namespace {id}, Size: {size}, Blocks: {blocks}, Block size: {block_size}");
 
-        NvmeNamespace {
+        let namespace = NvmeNamespace {
             id,
             blocks,
             block_size,
+        };
+        self.namespaces.insert(id, namespace);
+        namespace.clone()
+    }
+
+    pub fn namespace_read(&mut self, ns: &NvmeNamespace, blocks: u32) -> Option<usize> {
+        // TODO: what do when blocks > huge page size?
+        assert!(blocks > 0);
+        assert!(blocks <= 0x1_0000);
+
+        let io_q_id = self.sub_queues.len();
+        let c_q_id = self.comp_queues.len();
+
+        let io_q = self.sub_queues.get_mut(io_q_id - 1).unwrap();
+
+        let entry = NvmeCommand::io_read(
+            io_q.tail as u16,
+            1,
+            0,
+            blocks as u16 - 1,
+            self.buffer.phys as u64,
+            0 as u64,
+        );
+
+        let tail = io_q.submit(entry);
+        self.write_reg_idx(NvmeArrayRegs::SQyTDBL, io_q_id as u16, tail as u32);
+
+        let c_q = self.comp_queues.get_mut(c_q_id - 1).unwrap();
+        let (tail, entry, _) = c_q.complete_spin();
+        let status = entry.status;
+        self.write_reg_idx(NvmeArrayRegs::CQyHDBL, c_q_id as u16, tail as u32);
+
+        if status >> 1 != 0 {
+            return None;
         }
+
+        Some(blocks as usize * ns.block_size as usize)
+    }
+
+    //TODO: fix
+    pub fn read(&mut self, ns_id: u32, blocks: u32) {
+        let namespace = self.namespaces.get(&ns_id).unwrap().clone();
+        let bytes = self.namespace_read(&namespace, blocks).unwrap();
+
+        let mut data = String::new();
+        let buff = unsafe { *self.buffer.virt };
+        for &b in &buff[0..bytes] {
+            data.push(b as char);
+        }
+        println!("{data}");
     }
 
     pub fn submit_and_complete_admin<F: FnOnce(u16, usize) -> NvmeCommand>(

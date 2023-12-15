@@ -54,8 +54,7 @@ impl NvmeSubQueue {
     }
 
     pub fn submit(&mut self, entry: NvmeCommand) -> usize {
-        println!("SUBMISSION ENTRY: {:?}", entry);
-        // TODO
+        // println!("SUBMISSION ENTRY: {:?}", entry);
         unsafe {
             // seems legit
             (*self.commands.virt)[self.tail] = entry;
@@ -96,7 +95,7 @@ impl NvmeCompQueue {
                 self.phase = !self.phase;
             }
 
-            println!("COMPLETION ENTRY: {:?}", entry);
+            // println!("COMPLETION ENTRY: {:?}", entry);
             Some((self.head, entry, prev))
         } else {
             None
