@@ -60,7 +60,12 @@ pub fn init(pci_addr: &str) -> Result<(), Box<dyn Error>> {
         println!("ns_id: {n}");
         nvme.identify_namespace(n);
     }
-    nvme.read(1, 10);
+
+    // testing stuff
+    nvme.read(1, 1);
+    nvme.test_write("hello".repeat(5))?;
+    nvme.read(1, 1);
+
     Ok(())
 }
 

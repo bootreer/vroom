@@ -191,7 +191,7 @@ impl NvmeDevice {
     pub fn identify_controller(&mut self) -> Result<(), Box<dyn Error>> {
         println!("Trying to identify controller");
         let _entry =
-            self.submit_and_complete_admin(|c_id, ptr| NvmeCommand::identify_controller(c_id, ptr));
+            self.submit_and_complete_admin(NvmeCommand::identify_controller);
 
         println!("Dumping identify controller");
         let mut serial = String::new();
@@ -301,7 +301,7 @@ impl NvmeDevice {
         // figure out block size
         let flba_idx = (namespace_data.flbas & 0xF) as usize;
         let flba_data = (namespace_data.lba_format_support[flba_idx] >> 16) & 0xFF;
-        let block_size = if flba_data < 9 || flba_data >= 32 {
+        let block_size = if !(9..32).contains(&flba_data) {
             0
         } else {
             1 << flba_data
@@ -317,7 +317,7 @@ impl NvmeDevice {
             block_size,
         };
         self.namespaces.insert(id, namespace);
-        namespace.clone()
+        namespace
     }
 
     pub fn namespace_read(&mut self, ns: &NvmeNamespace, blocks: u32) -> Option<usize> {
@@ -332,11 +332,11 @@ impl NvmeDevice {
 
         let entry = NvmeCommand::io_read(
             io_q.tail as u16,
-            1,
+            ns.id,
             0,
             blocks as u16 - 1,
             self.buffer.phys as u64,
-            0 as u64,
+            0u64 , // TODO: what this
         );
 
         let tail = io_q.submit(entry);
@@ -356,7 +356,7 @@ impl NvmeDevice {
 
     //TODO: fix
     pub fn read(&mut self, ns_id: u32, blocks: u32) {
-        let namespace = self.namespaces.get(&ns_id).unwrap().clone();
+        let namespace = *self.namespaces.get(&ns_id).unwrap();
         let bytes = self.namespace_read(&namespace, blocks).unwrap();
 
         let mut data = String::new();
@@ -365,6 +365,42 @@ impl NvmeDevice {
             data.push(b as char);
         }
         println!("{data}");
+    }
+
+    //TODO: ugly
+    pub fn test_write(&mut self, data: String) -> Result<(), Box<dyn Error>> {
+        let ns = *self.namespaces.get(&1).unwrap();
+        let bytes = data.as_bytes();
+        println!("bytes len: {}", bytes.len());
+
+        unsafe {
+            (*self.buffer.virt)[..bytes.len()].copy_from_slice(bytes);
+        }
+
+        let blocks = bytes.len() / ns.block_size as usize;
+        println!("blocks to write {}", blocks);
+
+        let io_q_id = self.sub_queues.len();
+        let io_q = self.sub_queues.get_mut(io_q_id - 1).unwrap();
+
+        let entry =
+            NvmeCommand::io_write(io_q.tail as u16, ns.id, 0, blocks as u16, self.buffer.phys as u64, 0u64);
+
+        let tail = io_q.submit(entry);
+        self.write_reg_idx(NvmeArrayRegs::SQyTDBL, io_q_id as u16, tail as u32);
+
+        let c_q_id = self.comp_queues.len();
+        let c_q = self.comp_queues.get_mut(c_q_id - 1).unwrap();
+
+        let (tail, entry, _) = c_q.complete_spin();
+
+        self.write_reg_idx(NvmeArrayRegs::CQyHDBL, c_q_id as u16, tail as u32);
+        let status = entry.status >> 1;
+        if status != 0 {
+            println!("Status: 0x{:x}",status);
+            return Err("Write fail".into());
+        }
+        Ok(())
     }
 
     pub fn submit_and_complete_admin<F: FnOnce(u16, usize) -> NvmeCommand>(

@@ -70,7 +70,7 @@ impl<T> Dma<T> {
                 };
                 if ptr == libc::MAP_FAILED {
                     Err("failed to mmap huge page - are huge pages enabled and free?".into())
-                } else if unsafe { libc::mlock(ptr as *mut libc::c_void, size) } == 0 {
+                } else if unsafe { libc::mlock(ptr, size) } == 0 {
                     let memory = Dma {
                         virt: ptr as *mut T,
                         phys: virt_to_phys(ptr as usize)?,
@@ -167,5 +167,5 @@ pub(crate) fn virt_to_phys(addr: usize) -> Result<usize, Box<dyn Error>> {
 
 #[allow(unused)]
 pub fn vfio_enabled() -> bool {
-    unsafe { VFIO_CONTAINER_FILE_DESCRIPTOR != None }
+    unsafe { VFIO_CONTAINER_FILE_DESCRIPTOR.is_some() }
 }
