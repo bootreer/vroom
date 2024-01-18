@@ -11,9 +11,10 @@ mod pci;
 mod queues;
 
 use nvme::NvmeDevice;
-
 use self::pci::*;
 use std::error::Error;
+
+use std::time::Instant;
 
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
@@ -61,10 +62,39 @@ pub fn init(pci_addr: &str) -> Result<(), Box<dyn Error>> {
         nvme.identify_namespace(n);
     }
 
-    // testing stuff
-    nvme.read(1, 1);
-    nvme.test_write("hello".repeat(5))?;
-    nvme.read(1, 1);
+    // Testing stuff
+    let n = 2000;
+    let blocks = 8;
+    let mut lba = 0;
+    let mut read = std::time::Duration::new(0, 0);
+    let mut write = std::time::Duration::new(0, 0);
+    for _ in 0..n {
+        // read
+        let before = Instant::now();
+        nvme.read(1, blocks, lba);
+        read += before.elapsed();
+        // println!("{blocks} block read: {:?}", before.elapsed());
+        let rand_block = &(0.. (512 * blocks)).map(|_| { rand::random::<u8>() }).collect::<Vec<_>>()[..];
+
+
+        // write
+        let before = Instant::now();
+        nvme.write_raw(rand_block, lba)?;
+        write += before.elapsed();
+        // println!("{blocks} block write: {:?}", before.elapsed());
+
+        lba += blocks as u64;
+        // nvme.read(1, 4);
+    }
+
+    println!("{blocks} block read: {:?}", read / n);
+    println!("{blocks} block write: {:?}", write / n);
+    // nvme.test_write("6".repeat(512), 0)?;
+    // nvme.test_write("7".repeat(512), 1)?;
+    // nvme.test_write("8".repeat(512), 2)?;
+    // nvme.test_write("9".repeat(512), 3)?;
+
+    // nvme.read(1, 5);
 
     Ok(())
 }

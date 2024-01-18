@@ -10,3 +10,5 @@ Cargo.lock
 
 # misc
 .DS_Store
+# Shakespeare
+*.txt
