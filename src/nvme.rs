@@ -135,11 +135,10 @@ impl NvmeDevice {
         };
 
         // technically not correct
-        for i in 0..512 {
+        for i in 1..512 {
             unsafe {
-                (*dev.prp_list.virt)[i] = (dev.buffer.phys + i * 4096) as u64;
+                (*dev.prp_list.virt)[i - 1] = (dev.buffer.phys + i * 4096) as u64;
             }
-            // println!("buffer phys 0x{:x}", dev.buffer.phys + i * 4096);
         }
 
         println!("CAP: 0x{:x}", dev.get_reg64(NvmeRegs64::CAP as u64));
@@ -347,14 +346,13 @@ impl NvmeDevice {
         let q_id = self.comp_queues.len();
         let io_q = self.sub_queues.get_mut(q_id - 1).unwrap();
 
-        // TODO: fix
-        let pages = (blocks as u64 * ns.block_size) / 4096;
-        let ptr1 = if 1 <= pages {
+        let bytes = blocks as u64 * ns.block_size;
+        let ptr1 = if bytes <= 4096 {
             0
-        } else if pages == 2 {
+        } else if bytes <= 8192 {
             self.buffer.phys as u64 + 4096 // self.page_size
         } else {
-            self.prp_list.phys as u64 + 8 // TODO: doesn't work
+            self.prp_list.phys as u64
         };
 
         let entry = NvmeCommand::io_read(
@@ -384,6 +382,16 @@ impl NvmeDevice {
 
     pub fn read(&mut self, ns_id: u32, blocks: u32, lba: u64) {
         self.read_lba(ns_id, blocks, lba)
+    }
+
+    pub fn read_tmp(&mut self, ns_id: u32, blocks: u32, lba: u64) -> Vec<u8> {
+        let namespace = *self.namespaces.get(&ns_id).unwrap();
+        let bytes = self.namespace_read(&namespace, blocks, lba).unwrap();
+
+        let buff = unsafe { *self.buffer.virt };
+        let mut vec = vec![0; bytes];
+        vec.clone_from_slice(&buff[0..bytes]);
+        vec
     }
 
     pub fn read_lba(&mut self, ns_id: u32, blocks: u32, lba: u64) {
@@ -418,15 +426,16 @@ impl NvmeDevice {
         let q_id = self.sub_queues.len();
         let io_q = self.sub_queues.get_mut(q_id - 1).unwrap();
 
-        let pages = (blocks as u64 * ns.block_size) / 4096;
-        let ptr1 = if 1 <= pages {
+
+        // TODO: fix
+        let bytes = blocks as u64 * ns.block_size;
+        let ptr1 = if bytes <= 4096 {
             0
-        } else if pages == 2 {
+        } else if bytes <= 8192 {
             self.buffer.phys as u64 + 4096 // self.page_size
         } else {
-            self.prp_list.phys as u64 + 8 // TODO: doesn't work
+            self.prp_list.phys as u64
         };
-        // println!("pages: {pages}");
 
         let entry = NvmeCommand::io_write(
             io_q.tail as u16,
@@ -457,7 +466,7 @@ impl NvmeDevice {
         // println!("data len: {}", data.len());
 
         // for chunk in data.chunks(HUGE_PAGE_SIZE) {
-        for chunk in data.chunks(8192) {
+        for chunk in data.chunks(128 * 4096) {
             unsafe {
                 (*self.buffer.virt)[..chunk.len()].copy_from_slice(chunk);
             }
