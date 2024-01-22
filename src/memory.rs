@@ -38,7 +38,7 @@ impl<T> Dma<T> {
     #[allow(arithmetic_overflow)]
     pub fn allocate(size: usize, require_contiguous: bool) -> Result<Dma<T>, Box<dyn Error>> {
         let size = if size % HUGE_PAGE_SIZE != 0 {
-            ((size >> HUGE_PAGE_BITS) + 1) << HUGE_PAGE_SIZE // sus
+            ((size >> HUGE_PAGE_BITS) + 1) << HUGE_PAGE_BITS
         } else {
             size
         };

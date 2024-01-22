@@ -42,7 +42,7 @@ pub fn init(pci_addr: &str) -> Result<(), Box<dyn Error>> {
     let _vendor_id = read_hex(&mut vendor_file)?;
     let _device_id = read_hex(&mut device_file)?;
     let class_id = read_io32(&mut config_file, 8)? >> 16;
-    println!("{:X}", class_id);
+    // println!("{:X}", class_id);
 
     // 0x01 -> mass storage device class id
     // 0x08 -> nvme subclass
@@ -63,19 +63,22 @@ pub fn init(pci_addr: &str) -> Result<(), Box<dyn Error>> {
     }
 
     // Testing stuff
-    let n = 2000;
-    let blocks = 8;
+    let n = 1000;
+    let blocks = 24;
     let mut lba = 0;
     let mut read = std::time::Duration::new(0, 0);
     let mut write = std::time::Duration::new(0, 0);
     for _ in 0..n {
         // read
         let before = Instant::now();
+
+        // this guy doesn't work when writing more than 2 pages??
         nvme.read(1, blocks, lba);
         read += before.elapsed();
         // println!("{blocks} block read: {:?}", before.elapsed());
         let rand_block = &(0.. (512 * blocks)).map(|_| { rand::random::<u8>() }).collect::<Vec<_>>()[..];
 
+        assert_eq!(rand_block.len(), 512 * blocks as usize);
 
         // write
         let before = Instant::now();

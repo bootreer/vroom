@@ -105,6 +105,7 @@ pub struct NvmeDevice {
     sub_queues: Vec<NvmeSubQueue>,
     comp_queues: Vec<NvmeCompQueue>,
     buffer: Dma<[u8; 2048 * 1024]>, // 2MiB of buffer
+    prp_list: Dma<[u64; 512]>, // Address of PRP's, devices doesn't necessarily support 2MiB page sizes
     namespaces: HashMap<u32, NvmeNamespace>,
 }
 
@@ -112,7 +113,7 @@ pub struct NvmeDevice {
 impl NvmeDevice {
     pub fn init(pci_addr: &str) -> Result<Self, Box<dyn Error>> {
         let (addr, len) = pci_map_resource(pci_addr)?;
-        let dev = Self {
+        let mut dev = Self {
             pci_addr: pci_addr.to_string(),
             addr,
             dstrd: {
@@ -129,8 +130,17 @@ impl NvmeDevice {
             sub_queues: vec![],
             comp_queues: vec![],
             buffer: Dma::allocate(crate::memory::HUGE_PAGE_SIZE, true)?,
+            prp_list: Dma::allocate(64 * 512, true)?,
             namespaces: HashMap::new(),
         };
+
+        // technically not correct
+        for i in 0..512 {
+            unsafe {
+                (*dev.prp_list.virt)[i] = (dev.buffer.phys + i * 4096) as u64;
+            }
+            // println!("buffer phys 0x{:x}", dev.buffer.phys + i * 4096);
+        }
 
         println!("CAP: 0x{:x}", dev.get_reg64(NvmeRegs64::CAP as u64));
         println!("VS: 0x{:x}", dev.get_reg32(NvmeRegs32::VS as u32));
@@ -168,6 +178,11 @@ impl NvmeDevice {
         cc &= 0xFF00_000F;
         // Set Completion (2^4 = 16 Bytes) and Submission Entry (2^6 = 64 Bytes) sizes
         cc |= (4 << 20) | (6 << 16);
+
+        // Set Memory Page Size
+        // let mpsmax = ((dev.get_reg64(NvmeRegs64::CAP as u64) >> 52) & 0xF) as u32;
+        // cc |= (mpsmax << 7);
+        // println!("MPS {}", (cc >> 7) & 0xF);
         dev.set_reg32(NvmeRegs32::CC as u32, cc);
 
         // Enable the controller
@@ -319,15 +334,28 @@ impl NvmeDevice {
         namespace
     }
 
-    //TODO: fix PRP's, broken when reading > 4096 bytes; same for write
-    pub fn namespace_read(&mut self, ns: &NvmeNamespace, blocks: u32, lba: u64) -> Result<usize, Box<dyn Error>> {
-        // TODO: what do when blocks > huge page size?
+    //TODO: fix PRP's, broken when reading > 8192 bytes; same for write
+    pub fn namespace_read(
+        &mut self,
+        ns: &NvmeNamespace,
+        blocks: u32,
+        lba: u64,
+    ) -> Result<usize, Box<dyn Error>> {
         assert!(blocks > 0);
         assert!(blocks <= 0x1_0000);
 
         let q_id = self.comp_queues.len();
-
         let io_q = self.sub_queues.get_mut(q_id - 1).unwrap();
+
+        // TODO: fix
+        let pages = (blocks as u64 * ns.block_size) / 4096;
+        let ptr1 = if 1 <= pages {
+            0
+        } else if pages == 2 {
+            self.buffer.phys as u64 + 4096 // self.page_size
+        } else {
+            self.prp_list.phys as u64 + 8 // TODO: doesn't work
+        };
 
         let entry = NvmeCommand::io_read(
             io_q.tail as u16,
@@ -335,7 +363,7 @@ impl NvmeDevice {
             lba,
             blocks as u16 - 1,
             self.buffer.phys as u64,
-            0u64, // TODO: what this
+            ptr1
         );
 
         let tail = io_q.submit(entry);
@@ -343,13 +371,12 @@ impl NvmeDevice {
 
         let c_q = self.comp_queues.get_mut(q_id - 1).unwrap();
         let (tail, entry, _) = c_q.complete_spin();
-        let status = entry.status;
         self.write_reg_idx(NvmeArrayRegs::CQyHDBL, q_id as u16, tail as u32);
 
         let status = entry.status >> 1;
         if status != 0 {
-            println!("Status: 0x{:x}", status);
-            return Err("Write fail".into());
+            eprintln!("Status: 0x{:x}", status);
+            return Err("Read fail".into());
         }
 
         Ok(blocks as usize * ns.block_size as usize)
@@ -365,7 +392,6 @@ impl NvmeDevice {
 
         // let mut data = String::new();
         // let buff = unsafe { *self.buffer.virt };
-
         // for &b in &buff[0..bytes] {
         //     data.push(b as char);
         // }
@@ -377,22 +403,38 @@ impl NvmeDevice {
     }
 
     //TODO: ugly
-    pub fn namespace_write(&mut self, ns: &NvmeNamespace, blocks: u64, lba: u64) -> Result<(), Box<dyn Error>> {
-        assert!(blocks >= 1);
-        assert!(blocks < 0x1_0000);
-        let q_id = self.sub_queues.len();
+    pub fn namespace_write(
+        &mut self,
+        ns: &NvmeNamespace,
+        blocks: u64,
+        lba: u64,
+    ) -> Result<(), Box<dyn Error>> {
+        assert!(blocks > 0);
+        assert!(blocks <= 0x1_0000);
 
         // let mut io_q = self.sub_queues.pop().unwrap();
-        // let mut c_q = self.comp_queues.pop().unwrap();
+        // let mut c_q = elf.comp_queues.pop().unwrap();
 
+        let q_id = self.sub_queues.len();
         let io_q = self.sub_queues.get_mut(q_id - 1).unwrap();
+
+        let pages = (blocks as u64 * ns.block_size) / 4096;
+        let ptr1 = if 1 <= pages {
+            0
+        } else if pages == 2 {
+            self.buffer.phys as u64 + 4096 // self.page_size
+        } else {
+            self.prp_list.phys as u64 + 8 // TODO: doesn't work
+        };
+        // println!("pages: {pages}");
+
         let entry = NvmeCommand::io_write(
             io_q.tail as u16,
             ns.id,
             lba,
             blocks as u16 - 1,
             self.buffer.phys as u64,
-            0u64,
+            ptr1,
         );
         let tail = io_q.submit(entry);
         self.write_reg_idx(NvmeArrayRegs::SQyTDBL, q_id as u16, tail as u32);
@@ -403,7 +445,7 @@ impl NvmeDevice {
 
         let status = entry.status >> 1;
         if status != 0 {
-            println!("Status: 0x{:x}", status);
+            eprintln!("Status: 0x{:x}", status);
             return Err("Write fail".into());
         }
 
@@ -414,7 +456,8 @@ impl NvmeDevice {
         let ns = *self.namespaces.get(&1).unwrap();
         // println!("data len: {}", data.len());
 
-        for chunk in data.chunks(HUGE_PAGE_SIZE) {
+        // for chunk in data.chunks(HUGE_PAGE_SIZE) {
+        for chunk in data.chunks(8192) {
             unsafe {
                 (*self.buffer.virt)[..chunk.len()].copy_from_slice(chunk);
             }
