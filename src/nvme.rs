@@ -139,6 +139,7 @@ impl NvmeDevice {
             unsafe {
                 (*dev.prp_list.virt)[i - 1] = (dev.buffer.phys + i * 4096) as u64;
             }
+            // println!("buffer phys 0x{:x}", dev.buffer.phys + i * 4096);
         }
 
         println!("CAP: 0x{:x}", dev.get_reg64(NvmeRegs64::CAP as u64));
@@ -256,8 +257,9 @@ impl NvmeDevice {
                 (QUEUE_LENGTH - 1) as u16,
             )
         });
-        let status = comp.status;
-        if status >> 1 != 0 {
+        let status = comp.status >> 1;
+        if status != 0 {
+            eprintln!("Status: 0x{:x}, Status Code 0x{:x}, Status Code Type: 0x{:x}", status, status & 0xFF, (status >> 8) & 0x7);
             println!("something went awry: 0x{:x}", status)
         }
 
@@ -275,8 +277,9 @@ impl NvmeDevice {
                 cq_id as u16,
             )
         });
-        let status = comp.status;
-        if status >> 1 != 0 {
+        let status = comp.status >> 1;
+        if status != 0 {
+            eprintln!("Status: 0x{:x}, Status Code 0x{:x}, Status Code Type: 0x{:x}", status, status & 0xFF, (status >> 8) & 0x7);
             println!("something went awry: 0x{:x}", status)
         }
 
@@ -373,7 +376,7 @@ impl NvmeDevice {
 
         let status = entry.status >> 1;
         if status != 0 {
-            eprintln!("Status: 0x{:x}", status);
+            eprintln!("Status: 0x{:x}, Status Code 0x{:x}, Status Code Type: 0x{:x}", status, status & 0xFF, (status >> 8) & 0x7);
             return Err("Read fail".into());
         }
 
@@ -436,6 +439,7 @@ impl NvmeDevice {
         } else {
             self.prp_list.phys as u64
         };
+        // println!("blocks to write {}", blocks);
 
         let entry = NvmeCommand::io_write(
             io_q.tail as u16,
@@ -454,7 +458,7 @@ impl NvmeDevice {
 
         let status = entry.status >> 1;
         if status != 0 {
-            eprintln!("Status: 0x{:x}", status);
+            eprintln!("Status: 0x{:x}, Status Code 0x{:x}, Status Code Type: 0x{:x}", status, status & 0xFF, (status >> 8) & 0x7);
             return Err("Write fail".into());
         }
 
@@ -471,7 +475,6 @@ impl NvmeDevice {
                 (*self.buffer.virt)[..chunk.len()].copy_from_slice(chunk);
             }
             let blocks = (chunk.len() + ns.block_size as usize - 1) / ns.block_size as usize;
-            // println!("blocks to write {}", blocks);
 
             self.namespace_write(&ns, blocks as u64, lba)?;
             lba += blocks as u64;

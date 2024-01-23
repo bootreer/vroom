@@ -15,6 +15,8 @@ use self::pci::*;
 use std::error::Error;
 
 use std::time::Instant;
+use std::io::Read;
+use std::fs::File;
 
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
@@ -68,36 +70,40 @@ pub fn init(pci_addr: &str) -> Result<(), Box<dyn Error>> {
     let mut lba = 0;
     let mut read = std::time::Duration::new(0, 0);
     let mut write = std::time::Duration::new(0, 0);
-    for _ in 0..n {
-        // read
-        let before = Instant::now();
 
-        // this guy doesn't work when writing more than 2 pages??
-        nvme.read(1, blocks, lba);
-        read += before.elapsed();
-        // println!("{blocks} block read: {:?}", before.elapsed());
-        let rand_block = &(0.. (512 * blocks)).map(|_| { rand::random::<u8>() }).collect::<Vec<_>>()[..];
+    let mut shakespeare = File::open("pg100.txt")?;
+    let mut buffer = Vec::new();
+    shakespeare.read_to_end(&mut buffer)?;
+    let before = Instant::now();
+    nvme.write_raw(&buffer[..], lba)?;
+    write += before.elapsed();
 
-        assert_eq!(rand_block.len(), 512 * blocks as usize);
+    // for _ in 0..n {
+    //     // read
+    //     let before = Instant::now();
 
-        // write
-        let before = Instant::now();
-        nvme.write_raw(rand_block, lba)?;
-        write += before.elapsed();
-        // println!("{blocks} block write: {:?}", before.elapsed());
+    //     // this guy doesn't work when writing more than 2 pages??
+    //     nvme.read(1, blocks, lba);
+    //     read += before.elapsed();
+    //     // println!("{blocks} block read: {:?}", before.elapsed());
+    //     let rand_block = &(0.. (512 * blocks)).map(|_| { rand::random::<u8>() }).collect::<Vec<_>>()[..];
 
-        lba += blocks as u64;
-        // nvme.read(1, 4);
-    }
+    //     assert_eq!(rand_block.len(), 512 * blocks as usize);
 
-    println!("{blocks} block read: {:?}", read / n);
+    //     // write
+    //     let before = Instant::now();
+    //     nvme.write_raw(rand_block, lba)?;
+    //     write += before.elapsed();
+    //     // println!("{blocks} block write: {:?}", before.elapsed());
+    //     let data = nvme.read_tmp(1, blocks, lba);
+    //     assert_eq!(data, rand_block);
+
+    //     lba += blocks as u64;
+    //     // nvme.read(1, 4);
+    // }
+
+    // println!("{blocks} block read: {:?}", read / n);
     println!("{blocks} block write: {:?}", write / n);
-    // nvme.test_write("6".repeat(512), 0)?;
-    // nvme.test_write("7".repeat(512), 1)?;
-    // nvme.test_write("8".repeat(512), 2)?;
-    // nvme.test_write("9".repeat(512), 3)?;
-
-    // nvme.read(1, 5);
 
     Ok(())
 }
