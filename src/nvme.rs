@@ -1,6 +1,7 @@
 use crate::cmd::NvmeCommand;
 use crate::memory::Dma;
 use crate::memory::HUGE_PAGE_SIZE;
+// use crate::memory::HUGE_PAGE_SIZE;
 use crate::pci::pci_map_resource;
 use crate::queues::*;
 use crate::NvmeNamespace;
@@ -105,7 +106,7 @@ pub struct NvmeDevice {
     sub_queues: Vec<NvmeSubQueue>,
     comp_queues: Vec<NvmeCompQueue>,
     buffer: Dma<[u8; 2048 * 1024]>, // 2MiB of buffer
-    prp_list: Dma<[u64; 512]>, // Address of PRP's, devices doesn't necessarily support 2MiB page sizes
+    prp_list: Dma<[u64; 512]>, // Address of PRP's, devices doesn't necessarily support 2MiB page sizes; 8 Bytes * 512 = 4096
     namespaces: HashMap<u32, NvmeNamespace>,
 }
 
@@ -130,11 +131,10 @@ impl NvmeDevice {
             sub_queues: vec![],
             comp_queues: vec![],
             buffer: Dma::allocate(crate::memory::HUGE_PAGE_SIZE, true)?,
-            prp_list: Dma::allocate(64 * 512, true)?,
+            prp_list: Dma::allocate(8 * 512, true)?,
             namespaces: HashMap::new(),
         };
 
-        // technically not correct
         for i in 1..512 {
             unsafe {
                 (*dev.prp_list.virt)[i - 1] = (dev.buffer.phys + i * 4096) as u64;
@@ -259,7 +259,12 @@ impl NvmeDevice {
         });
         let status = comp.status >> 1;
         if status != 0 {
-            eprintln!("Status: 0x{:x}, Status Code 0x{:x}, Status Code Type: 0x{:x}", status, status & 0xFF, (status >> 8) & 0x7);
+            eprintln!(
+                "Status: 0x{:x}, Status Code 0x{:x}, Status Code Type: 0x{:x}",
+                status,
+                status & 0xFF,
+                (status >> 8) & 0x7
+            );
             println!("something went awry: 0x{:x}", status)
         }
 
@@ -279,7 +284,12 @@ impl NvmeDevice {
         });
         let status = comp.status >> 1;
         if status != 0 {
-            eprintln!("Status: 0x{:x}, Status Code 0x{:x}, Status Code Type: 0x{:x}", status, status & 0xFF, (status >> 8) & 0x7);
+            eprintln!(
+                "Status: 0x{:x}, Status Code 0x{:x}, Status Code Type: 0x{:x}",
+                status,
+                status & 0xFF,
+                (status >> 8) & 0x7
+            );
             println!("something went awry: 0x{:x}", status)
         }
 
@@ -336,20 +346,44 @@ impl NvmeDevice {
         namespace
     }
 
-    //TODO: fix PRP's, broken when reading > 8192 bytes; same for write
-    pub fn namespace_read(
+    pub fn read(
+        &mut self,
+        ns_id: u32,
+        dest: &mut [u8],
+        mut lba: u64,
+    ) -> Result<(), Box<dyn Error>> {
+        let ns = *self.namespaces.get(&ns_id).unwrap();
+
+        // for chunk in dest.chunks_mut(HUGE_PAGE_SIZE) {
+        for chunk in dest.chunks_mut(128 * 4096) {
+            let blocks = (chunk.len() + ns.block_size as usize - 1) / ns.block_size as usize;
+            self.namespace_io(&ns, blocks as u64, lba, false)?;
+            chunk.copy_from_slice(&unsafe { (*self.buffer.virt) }[..chunk.len()]);
+            lba += blocks as u64;
+        }
+        // self.read_lba(ns_id, blocks, lba)
+        Ok(())
+    }
+
+    pub fn write_string(&mut self, data: String, lba: u64) -> Result<(), Box<dyn Error>> {
+        self.write_raw(data.as_bytes(), lba)
+    }
+
+    pub fn submit_io(
         &mut self,
         ns: &NvmeNamespace,
-        blocks: u32,
+        addr: u64,
+        blocks: u64,
         lba: u64,
-    ) -> Result<usize, Box<dyn Error>> {
+        write: bool,
+    ) -> Option<usize> {
         assert!(blocks > 0);
         assert!(blocks <= 0x1_0000);
 
-        let q_id = self.comp_queues.len();
-        let io_q = self.sub_queues.get_mut(q_id - 1).unwrap();
+        let q_id = self.sub_queues.len();
+        let mut io_q = &mut self.sub_queues[q_id - 1];
 
-        let bytes = blocks as u64 * ns.block_size;
+        let bytes = blocks * ns.block_size;
         let ptr1 = if bytes <= 4096 {
             0
         } else if bytes <= 8192 {
@@ -358,80 +392,87 @@ impl NvmeDevice {
             self.prp_list.phys as u64
         };
 
-        let entry = NvmeCommand::io_read(
-            io_q.tail as u16,
-            ns.id,
-            lba,
-            blocks as u16 - 1,
-            self.buffer.phys as u64,
-            ptr1
-        );
+        let entry = if write {
+            NvmeCommand::io_write(io_q.tail as u16, ns.id, lba, blocks as u16 - 1, addr, ptr1)
+        } else {
+            NvmeCommand::io_read(io_q.tail as u16, ns.id, lba, blocks as u16 - 1, addr, ptr1)
+        };
+        io_q.submit_checked(entry)
+    }
 
-        let tail = io_q.submit(entry);
-        self.write_reg_idx(NvmeArrayRegs::SQyTDBL, q_id as u16, tail as u32);
+    pub fn batched_write(
+        &mut self,
+        ns_id: u32,
+        data: &[u8],
+        mut lba: u64,
+        batch_len: u64,
+    ) -> Result<(), Box<dyn Error>> {
+        let ns = *self.namespaces.get(&ns_id).unwrap();
+        let block_size = 512;
+        let q_id = 1;
 
-        let c_q = self.comp_queues.get_mut(q_id - 1).unwrap();
-        let (tail, entry, _) = c_q.complete_spin();
-        self.write_reg_idx(NvmeArrayRegs::CQyHDBL, q_id as u16, tail as u32);
+        for chunk in data.chunks(HUGE_PAGE_SIZE) {
+            unsafe { (*self.buffer.virt)[..chunk.len()].copy_from_slice(chunk) }
+            let mut tail = self.sub_queues[q_id - 1].tail;
 
-        let status = entry.status >> 1;
-        if status != 0 {
-            eprintln!("Status: 0x{:x}, Status Code 0x{:x}, Status Code Type: 0x{:x}", status, status & 0xFF, (status >> 8) & 0x7);
-            return Err("Read fail".into());
+            let batch_len = std::cmp::min(batch_len, chunk.len() as u64 / block_size);
+            let batch_size = chunk.len() as u64 / batch_len;
+            let blocks = batch_size / ns.block_size;
+            for i in 0..batch_len {
+                if let Some(new_tail) = self.submit_io(
+                    &ns,
+                    self.buffer.phys as u64 + i * batch_size,
+                    blocks,
+                    lba,
+                    true,
+                ) {
+                    tail = new_tail;
+                } else {
+                    eprintln!("tail: {tail}, batch_len: {batch_len}, batch_size: {batch_size}, blocks: {blocks}");
+                    tail = tail;
+                }
+                lba += blocks;
+            }
+            self.write_reg_idx(NvmeArrayRegs::SQyTDBL, q_id as u16, tail as u32);
+            let c_q = &mut self.comp_queues[q_id - 1];
+
+            let (tail, c_entry, _) = c_q.complete_n(batch_len as usize);
+            self.write_reg_idx(NvmeArrayRegs::CQyHDBL, q_id as u16, tail as u32);
+
+            let status = c_entry.status >> 1;
+            if status != 0 {
+                eprintln!(
+                    "Status: 0x{:x}, Status Code 0x{:x}, Status Code Type: 0x{:x}",
+                    status,
+                    status & 0xFF,
+                    (status >> 8) & 0x7
+                );
+                eprintln!("{:?}", c_entry);
+                return Err("Write fail".into());
+            }
+            let head = c_entry.sq_head;
+            self.sub_queues[0].head = c_entry.sq_head as usize;
         }
 
-        Ok(blocks as usize * ns.block_size as usize)
+        Ok(())
     }
 
-    pub fn read(&mut self, ns_id: u32, blocks: u32, lba: u64) {
-        self.read_lba(ns_id, blocks, lba)
-    }
-
-    pub fn read_tmp(&mut self, ns_id: u32, blocks: u32, lba: u64) -> Vec<u8> {
-        let namespace = *self.namespaces.get(&ns_id).unwrap();
-        let bytes = self.namespace_read(&namespace, blocks, lba).unwrap();
-
-        let buff = unsafe { *self.buffer.virt };
-        let mut vec = vec![0; bytes];
-        vec.clone_from_slice(&buff[0..bytes]);
-        vec
-    }
-
-    pub fn read_lba(&mut self, ns_id: u32, blocks: u32, lba: u64) {
-        let namespace = *self.namespaces.get(&ns_id).unwrap();
-        let bytes = self.namespace_read(&namespace, blocks, lba).unwrap();
-
-        // let mut data = String::new();
-        // let buff = unsafe { *self.buffer.virt };
-        // for &b in &buff[0..bytes] {
-        //     data.push(b as char);
-        // }
-        // println!("{data}");
-    }
-
-    pub fn write_string(&mut self, data: String, lba: u64) -> Result<(), Box<dyn Error>> {
-        self.write_raw(data.as_bytes(), lba)
-    }
-
-    //TODO: ugly
-    pub fn namespace_write(
+    pub fn namespace_io(
         &mut self,
         ns: &NvmeNamespace,
         blocks: u64,
         lba: u64,
+        write: bool,
     ) -> Result<(), Box<dyn Error>> {
         assert!(blocks > 0);
         assert!(blocks <= 0x1_0000);
 
-        // let mut io_q = self.sub_queues.pop().unwrap();
-        // let mut c_q = elf.comp_queues.pop().unwrap();
-
         let q_id = self.sub_queues.len();
-        let io_q = self.sub_queues.get_mut(q_id - 1).unwrap();
-
-
-        // TODO: fix
-        let bytes = blocks as u64 * ns.block_size;
+        let mut io_q = self.sub_queues.pop().unwrap();
+        let mut c_q = self.comp_queues.pop().unwrap();
+        // let io_q = self.sub_queues.get_mut(q_id - 1).unwrap();
+        //
+        let bytes = blocks * ns.block_size;
         let ptr1 = if bytes <= 4096 {
             0
         } else if bytes <= 8192 {
@@ -441,26 +482,49 @@ impl NvmeDevice {
         };
         // println!("blocks to write {}", blocks);
 
-        let entry = NvmeCommand::io_write(
-            io_q.tail as u16,
-            ns.id,
-            lba,
-            blocks as u16 - 1,
-            self.buffer.phys as u64,
-            ptr1,
-        );
+        let entry = if write {
+            NvmeCommand::io_write(
+                io_q.tail as u16,
+                ns.id,
+                lba,
+                blocks as u16 - 1,
+                self.buffer.phys as u64,
+                ptr1,
+            )
+        } else {
+            NvmeCommand::io_read(
+                io_q.tail as u16,
+                ns.id,
+                lba,
+                blocks as u16 - 1,
+                self.buffer.phys as u64,
+                ptr1,
+            )
+        };
+
         let tail = io_q.submit(entry);
         self.write_reg_idx(NvmeArrayRegs::SQyTDBL, q_id as u16, tail as u32);
 
-        let c_q = self.comp_queues.get_mut(q_id - 1).unwrap();
-        let (tail, entry, _) = c_q.complete_spin();
+        // let c_q = self.comp_queues.get_mut(q_id - 1).unwrap();
+        let (tail, c_entry, _) = c_q.complete_spin();
         self.write_reg_idx(NvmeArrayRegs::CQyHDBL, q_id as u16, tail as u32);
 
-        let status = entry.status >> 1;
+        let status = c_entry.status >> 1;
         if status != 0 {
-            eprintln!("Status: 0x{:x}, Status Code 0x{:x}, Status Code Type: 0x{:x}", status, status & 0xFF, (status >> 8) & 0x7);
+            eprintln!(
+                "Status: 0x{:x}, Status Code 0x{:x}, Status Code Type: 0x{:x}",
+                status,
+                status & 0xFF,
+                (status >> 8) & 0x7
+            );
+            eprintln!("{:?}", entry);
+            eprintln!("{:?}", c_entry);
             return Err("Write fail".into());
         }
+        io_q.head = c_entry.sq_head as usize;
+
+        self.sub_queues.push(io_q);
+        self.comp_queues.push(c_q);
 
         Ok(())
     }
@@ -476,7 +540,7 @@ impl NvmeDevice {
             }
             let blocks = (chunk.len() + ns.block_size as usize - 1) / ns.block_size as usize;
 
-            self.namespace_write(&ns, blocks as u64, lba)?;
+            self.namespace_io(&ns, blocks as u64, lba, true)?;
             lba += blocks as u64;
         }
 

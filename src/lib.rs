@@ -15,25 +15,31 @@ use self::pci::*;
 use std::error::Error;
 
 use std::time::Instant;
-use std::io::Read;
-use std::fs::File;
+// use std::io::Read;
+// use std::fs::File;
 
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
-pub(crate) unsafe fn pause() {
-    std::arch::aarch64::__yield();
+pub(crate) fn pause() {
+    unsafe {
+        std::arch::aarch64::__yield();
+    }
 }
 
 #[cfg(target_arch = "x86")]
 #[inline(always)]
-pub(crate) unsafe fn pause() {
-    std::arch::x86::_mm_pause();
+pub(crate) fn pause() {
+    unsafe {
+        std::arch::x86::_mm_pause();
+    }
 }
 
 #[cfg(target_arch = "x86_64")]
 #[inline(always)]
-pub(crate) unsafe fn pause() {
-    std::arch::x86_64::_mm_pause();
+pub(crate) fn pause() {
+    unsafe {
+        std::arch::x86_64::_mm_pause();
+    }
 }
 
 pub fn init(pci_addr: &str) -> Result<(), Box<dyn Error>> {
@@ -66,45 +72,41 @@ pub fn init(pci_addr: &str) -> Result<(), Box<dyn Error>> {
 
     // Testing stuff
     let n = 1000;
-    let blocks = 24;
-    let mut lba = 0;
+    let n2 = 100;
+    let blocks = 128;
     let mut read = std::time::Duration::new(0, 0);
     let mut write = std::time::Duration::new(0, 0);
+    let mut write_batched = std::time::Duration::new(0, 0);
+    let mut read_buf = vec![0; blocks * 512];
 
-    let mut shakespeare = File::open("pg100.txt")?;
-    let mut buffer = Vec::new();
-    shakespeare.read_to_end(&mut buffer)?;
-    let before = Instant::now();
-    nvme.write_raw(&buffer[..], lba)?;
-    write += before.elapsed();
+    for _ in 0..n2 {
+        let mut lba = 0;
+        for _ in 0..n {
+            // write
+            let rand_block = &(0.. (512 * blocks)).map(|_| { rand::random::<u8>() }).collect::<Vec<_>>()[..];
+            let before = Instant::now();
+            nvme.write_raw(rand_block, lba)?;
+            write += before.elapsed();
 
-    // for _ in 0..n {
-    //     // read
-    //     let before = Instant::now();
+            let before = Instant::now();
+            nvme.batched_write(1, rand_block, lba, 16)?;
+            write_batched += before.elapsed();
 
-    //     // this guy doesn't work when writing more than 2 pages??
-    //     nvme.read(1, blocks, lba);
-    //     read += before.elapsed();
-    //     // println!("{blocks} block read: {:?}", before.elapsed());
-    //     let rand_block = &(0.. (512 * blocks)).map(|_| { rand::random::<u8>() }).collect::<Vec<_>>()[..];
+            // read
+            let before = Instant::now();
+            nvme.read(1, &mut read_buf[..], lba)?;
+            read += before.elapsed();
+            // assert_eq!(read_buf, rand_block);
 
-    //     assert_eq!(rand_block.len(), 512 * blocks as usize);
+            lba += blocks as u64;
+            // nvme.read(1, 4);
+        }
+    }
+    let n = n * n2;
 
-    //     // write
-    //     let before = Instant::now();
-    //     nvme.write_raw(rand_block, lba)?;
-    //     write += before.elapsed();
-    //     // println!("{blocks} block write: {:?}", before.elapsed());
-    //     let data = nvme.read_tmp(1, blocks, lba);
-    //     assert_eq!(data, rand_block);
-
-    //     lba += blocks as u64;
-    //     // nvme.read(1, 4);
-    // }
-
-    // println!("{blocks} block read: {:?}", read / n);
     println!("{blocks} block write: {:?}", write / n);
-
+    println!("{blocks} block batched write: {:?}", write_batched / n);
+    println!("{blocks} block read: {:?}", read / n);
     Ok(())
 }
 

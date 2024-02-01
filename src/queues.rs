@@ -30,7 +30,7 @@ pub const QUEUE_LENGTH: usize = 1024;
 pub struct NvmeSubQueue {
     // TODO: switch to mempool for larger queue
     pub commands: Dma<[NvmeCommand; QUEUE_LENGTH]>,
-    head: usize,
+    pub head: usize,
     pub tail: usize,
 }
 
@@ -49,14 +49,23 @@ impl NvmeSubQueue {
     pub fn is_empty(&self) -> bool {
         self.head == self.tail
     }
+
     pub fn is_full(&self) -> bool {
-        self.head == self.tail + 1
+        self.head == (self.tail + 1) % QUEUE_LENGTH
     }
 
+    pub fn submit_checked(&mut self, entry: NvmeCommand) -> Option<usize> {
+        if self.is_full() {
+            None
+        } else {
+            Some(self.submit(entry))
+        }
+    }
+
+    #[inline(always)]
     pub fn submit(&mut self, entry: NvmeCommand) -> usize {
         // println!("SUBMISSION ENTRY: {:?}", entry);
         unsafe {
-            // seems legit
             (*self.commands.virt)[self.tail] = entry;
         }
         self.tail = (self.tail + 1) % QUEUE_LENGTH;
@@ -102,14 +111,25 @@ impl NvmeCompQueue {
         }
     }
 
+    ///
+    pub fn complete_n(&mut self, commands: usize) -> (usize, NvmeCompletion, usize) {
+        let prev = self.head;
+        self.head += commands - 1;
+        if self.head >= QUEUE_LENGTH {
+            self.phase = !self.phase;
+        }
+        self.head %= QUEUE_LENGTH;
+
+        let (head, entry, _) = self.complete_spin();
+        (head, entry, prev)
+    }
+
     pub fn complete_spin(&mut self) -> (usize, NvmeCompletion, usize) {
         loop {
             if let Some(val) = self.complete() {
                 return val;
             } else {
-                unsafe {
-                    super::pause();
-                };
+                super::pause();
             }
         }
     }
