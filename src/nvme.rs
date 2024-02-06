@@ -400,6 +400,27 @@ impl NvmeDevice {
         io_q.submit_checked(entry)
     }
 
+    pub fn complete_io(&mut self, step: u64) -> Option<u16> {
+        let q_id = 1;
+        let c_q = &mut self.comp_queues[q_id - 1];
+
+        let (tail, c_entry, _) = c_q.complete_n(step as usize);
+        self.write_reg_idx(NvmeArrayRegs::CQyHDBL, q_id as u16, tail as u32);
+
+        let status = c_entry.status >> 1;
+        if status != 0 {
+            eprintln!(
+                "Status: 0x{:x}, Status Code 0x{:x}, Status Code Type: 0x{:x}",
+                status,
+                status & 0xFF,
+                (status >> 8) & 0x7
+            );
+            eprintln!("{:?}", c_entry);
+            return None;
+        }
+        Some(c_entry.sq_head)
+    }
+
     pub fn batched_write(
         &mut self,
         ns_id: u32,
@@ -418,6 +439,7 @@ impl NvmeDevice {
             let batch_len = std::cmp::min(batch_len, chunk.len() as u64 / block_size);
             let batch_size = chunk.len() as u64 / batch_len;
             let blocks = batch_size / ns.block_size;
+
             for i in 0..batch_len {
                 if let Some(new_tail) = self.submit_io(
                     &ns,
@@ -427,31 +449,13 @@ impl NvmeDevice {
                     true,
                 ) {
                     tail = new_tail;
+                    self.write_reg_idx(NvmeArrayRegs::SQyTDBL, q_id as u16, tail as u32);
                 } else {
                     eprintln!("tail: {tail}, batch_len: {batch_len}, batch_size: {batch_size}, blocks: {blocks}");
-                    tail = tail;
                 }
                 lba += blocks;
             }
-            self.write_reg_idx(NvmeArrayRegs::SQyTDBL, q_id as u16, tail as u32);
-            let c_q = &mut self.comp_queues[q_id - 1];
-
-            let (tail, c_entry, _) = c_q.complete_n(batch_len as usize);
-            self.write_reg_idx(NvmeArrayRegs::CQyHDBL, q_id as u16, tail as u32);
-
-            let status = c_entry.status >> 1;
-            if status != 0 {
-                eprintln!(
-                    "Status: 0x{:x}, Status Code 0x{:x}, Status Code Type: 0x{:x}",
-                    status,
-                    status & 0xFF,
-                    (status >> 8) & 0x7
-                );
-                eprintln!("{:?}", c_entry);
-                return Err("Write fail".into());
-            }
-            let head = c_entry.sq_head;
-            self.sub_queues[0].head = c_entry.sq_head as usize;
+            self.sub_queues[0].head = self.complete_io(batch_len).unwrap() as usize;
         }
 
         Ok(())
@@ -467,11 +471,9 @@ impl NvmeDevice {
         assert!(blocks > 0);
         assert!(blocks <= 0x1_0000);
 
-        let q_id = self.sub_queues.len();
-        let mut io_q = self.sub_queues.pop().unwrap();
-        let mut c_q = self.comp_queues.pop().unwrap();
-        // let io_q = self.sub_queues.get_mut(q_id - 1).unwrap();
-        //
+        let q_id = 1;
+        let io_q = &mut self.sub_queues[q_id - 1];
+
         let bytes = blocks * ns.block_size;
         let ptr1 = if bytes <= 4096 {
             0
@@ -480,7 +482,6 @@ impl NvmeDevice {
         } else {
             self.prp_list.phys as u64
         };
-        // println!("blocks to write {}", blocks);
 
         let entry = if write {
             NvmeCommand::io_write(
@@ -504,28 +505,7 @@ impl NvmeDevice {
 
         let tail = io_q.submit(entry);
         self.write_reg_idx(NvmeArrayRegs::SQyTDBL, q_id as u16, tail as u32);
-
-        // let c_q = self.comp_queues.get_mut(q_id - 1).unwrap();
-        let (tail, c_entry, _) = c_q.complete_spin();
-        self.write_reg_idx(NvmeArrayRegs::CQyHDBL, q_id as u16, tail as u32);
-
-        let status = c_entry.status >> 1;
-        if status != 0 {
-            eprintln!(
-                "Status: 0x{:x}, Status Code 0x{:x}, Status Code Type: 0x{:x}",
-                status,
-                status & 0xFF,
-                (status >> 8) & 0x7
-            );
-            eprintln!("{:?}", entry);
-            eprintln!("{:?}", c_entry);
-            return Err("Write fail".into());
-        }
-        io_q.head = c_entry.sq_head as usize;
-
-        self.sub_queues.push(io_q);
-        self.comp_queues.push(c_q);
-
+        self.sub_queues[q_id - 1].head = self.complete_io(1).unwrap() as usize;
         Ok(())
     }
 
@@ -539,7 +519,6 @@ impl NvmeDevice {
                 (*self.buffer.virt)[..chunk.len()].copy_from_slice(chunk);
             }
             let blocks = (chunk.len() + ns.block_size as usize - 1) / ns.block_size as usize;
-
             self.namespace_io(&ns, blocks as u64, lba, true)?;
             lba += blocks as u64;
         }
