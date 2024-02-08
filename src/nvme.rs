@@ -461,6 +461,45 @@ impl NvmeDevice {
         Ok(())
     }
 
+    pub fn batched_read(
+        &mut self,
+        ns_id: u32,
+        data: &mut [u8],
+        mut lba: u64,
+        batch_len: u64,
+    ) -> Result<(), Box<dyn Error>> {
+        let ns = *self.namespaces.get(&ns_id).unwrap();
+        let block_size = 512;
+        let q_id = 1;
+
+        for chunk in data.chunks_mut(HUGE_PAGE_SIZE) {
+            let mut tail = self.sub_queues[q_id - 1].tail;
+
+            let batch_len = std::cmp::min(batch_len, chunk.len() as u64 / block_size);
+            let batch_size = chunk.len() as u64 / batch_len;
+            let blocks = batch_size / ns.block_size;
+
+            for i in 0..batch_len {
+                if let Some(new_tail) = self.submit_io(
+                    &ns,
+                    self.buffer.phys as u64 + i * batch_size,
+                    blocks,
+                    lba,
+                    false,
+                ) {
+                    tail = new_tail;
+                    self.write_reg_idx(NvmeArrayRegs::SQyTDBL, q_id as u16, tail as u32);
+                } else {
+                    eprintln!("tail: {tail}, batch_len: {batch_len}, batch_size: {batch_size}, blocks: {blocks}");
+                }
+                lba += blocks;
+            }
+            self.sub_queues[0].head = self.complete_io(batch_len).unwrap() as usize;
+            chunk.copy_from_slice(&unsafe { (*self.buffer.virt) }[..chunk.len()]);
+        }
+        Ok(())
+    }
+
     pub fn namespace_io(
         &mut self,
         ns: &NvmeNamespace,
