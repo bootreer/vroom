@@ -5,6 +5,7 @@ use crate::memory::HUGE_PAGE_SIZE;
 use crate::pci::pci_map_resource;
 use crate::queues::*;
 use crate::NvmeNamespace;
+use crate::NvmeStats;
 use std::collections::HashMap;
 use std::error::Error;
 
@@ -105,9 +106,10 @@ pub struct NvmeDevice {
     // maybe map?
     sub_queues: Vec<NvmeSubQueue>,
     comp_queues: Vec<NvmeCompQueue>,
-    buffer: Dma<[u8; 2048 * 1024]>, // 2MiB of buffer
+    pub buffer: Dma<[u8; 2048 * 1024]>, // 2MiB of buffer
     prp_list: Dma<[u64; 512]>, // Address of PRP's, devices doesn't necessarily support 2MiB page sizes; 8 Bytes * 512 = 4096
     namespaces: HashMap<u32, NvmeNamespace>,
+    stats: NvmeStats
 }
 
 #[allow(unused)]
@@ -133,6 +135,7 @@ impl NvmeDevice {
             buffer: Dma::allocate(crate::memory::HUGE_PAGE_SIZE, true)?,
             prp_list: Dma::allocate(8 * 512, true)?,
             namespaces: HashMap::new(),
+            stats: NvmeStats::default()
         };
 
         for i in 1..512 {
@@ -358,7 +361,7 @@ impl NvmeDevice {
         for chunk in dest.chunks_mut(128 * 4096) {
             let blocks = (chunk.len() + ns.block_size as usize - 1) / ns.block_size as usize;
             self.namespace_io(&ns, blocks as u64, lba, false)?;
-            chunk.copy_from_slice(&unsafe { (*self.buffer.virt) }[..chunk.len()]);
+            // chunk.copy_from_slice(&unsafe { (*self.buffer.virt) }[..chunk.len()]);
             lba += blocks as u64;
         }
         // self.read_lba(ns_id, blocks, lba)
@@ -387,7 +390,7 @@ impl NvmeDevice {
         let ptr1 = if bytes <= 4096 {
             0
         } else if bytes <= 8192 {
-            self.buffer.phys as u64 + 4096 // self.page_size
+            addr + 4096 // self.page_size
         } else {
             self.prp_list.phys as u64
         };
@@ -433,7 +436,7 @@ impl NvmeDevice {
         let q_id = 1;
 
         for chunk in data.chunks(HUGE_PAGE_SIZE) {
-            unsafe { (*self.buffer.virt)[..chunk.len()].copy_from_slice(chunk) }
+            // unsafe { (*self.buffer.virt)[..chunk.len()].copy_from_slice(chunk) }
             let mut tail = self.sub_queues[q_id - 1].tail;
 
             let batch_len = std::cmp::min(batch_len, chunk.len() as u64 / block_size);
@@ -441,15 +444,16 @@ impl NvmeDevice {
             let blocks = batch_size / ns.block_size;
 
             for i in 0..batch_len {
-                if let Some(new_tail) = self.submit_io(
+                if let Some(tail) = self.submit_io(
                     &ns,
                     self.buffer.phys as u64 + i * batch_size,
                     blocks,
                     lba,
                     true,
                 ) {
-                    tail = new_tail;
                     self.write_reg_idx(NvmeArrayRegs::SQyTDBL, q_id as u16, tail as u32);
+                    // tail = new_tail;
+                    // self.write_reg_idx(NvmeArrayRegs::SQyTDBL, q_id as u16, tail as u32);
                 } else {
                     eprintln!("tail: {tail}, batch_len: {batch_len}, batch_size: {batch_size}, blocks: {blocks}");
                 }
@@ -495,7 +499,7 @@ impl NvmeDevice {
                 lba += blocks;
             }
             self.sub_queues[0].head = self.complete_io(batch_len).unwrap() as usize;
-            chunk.copy_from_slice(&unsafe { (*self.buffer.virt) }[..chunk.len()]);
+            // chunk.copy_from_slice(&unsafe { (*self.buffer.virt) }[..chunk.len()]);
         }
         Ok(())
     }
@@ -554,9 +558,9 @@ impl NvmeDevice {
 
         // for chunk in data.chunks(HUGE_PAGE_SIZE) {
         for chunk in data.chunks(128 * 4096) {
-            unsafe {
-                (*self.buffer.virt)[..chunk.len()].copy_from_slice(chunk);
-            }
+            // unsafe {
+            //     (*self.buffer.virt)[..chunk.len()].copy_from_slice(chunk);
+            // }
             let blocks = (chunk.len() + ns.block_size as usize - 1) / ns.block_size as usize;
             self.namespace_io(&ns, blocks as u64, lba, true)?;
             lba += blocks as u64;

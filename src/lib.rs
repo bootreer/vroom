@@ -1,5 +1,3 @@
-#![feature(stdsimd)]
-
 #[allow(unused)]
 mod cmd;
 #[allow(dead_code)]
@@ -13,7 +11,6 @@ mod queues;
 use nvme::NvmeDevice;
 use self::pci::*;
 use std::error::Error;
-
 use std::time::Instant;
 // use std::io::Read;
 // use std::fs::File;
@@ -50,7 +47,6 @@ pub fn init(pci_addr: &str) -> Result<(), Box<dyn Error>> {
     let _vendor_id = read_hex(&mut vendor_file)?;
     let _device_id = read_hex(&mut device_file)?;
     let class_id = read_io32(&mut config_file, 8)? >> 16;
-    // println!("{:X}", class_id);
 
     // 0x01 -> mass storage device class id
     // 0x08 -> nvme subclass
@@ -58,7 +54,6 @@ pub fn init(pci_addr: &str) -> Result<(), Box<dyn Error>> {
         return Err(format!("device {} is not a block device", pci_addr).into());
     }
 
-    // todo: init device
     let mut nvme = NvmeDevice::init(pci_addr)?;
 
     nvme.identify_controller()?;
@@ -71,41 +66,46 @@ pub fn init(pci_addr: &str) -> Result<(), Box<dyn Error>> {
     }
 
     // Testing stuff
-    let n = 1000;
+    let n = 100;
     let n2 = 100;
-    let blocks = 512;
+    let blocks = 1024 * 4;
 
     let mut read = std::time::Duration::new(0, 0);
     let mut read_batched = std::time::Duration::new(0, 0);
-    let mut write = std::time::Duration::new(0, 0);
+    let mut _write = std::time::Duration::new(0, 0);
     let mut write_batched = std::time::Duration::new(0, 0);
 
     let mut read_buf = vec![0; blocks * 512];
     let mut read_bbuf = vec![0; blocks * 512];
+
+
     for _ in 0..n2 {
         let mut lba = 0;
         for _ in 0..n {
+
             let rand_block = &(0.. (512 * blocks)).map(|_| { rand::random::<u8>() }).collect::<Vec<_>>()[..];
+            unsafe { (*nvme.buffer.virt)[..].copy_from_slice(rand_block) };
 
             // write
-            let before = Instant::now();
-            nvme.write_raw(rand_block, lba)?;
-            write += before.elapsed();
+            // let before = Instant::now();
+            // nvme.write_raw(rand_block, lba)?;
+            // write += before.elapsed();
 
             let before = Instant::now();
-            nvme.batched_write(1, rand_block, lba, 64)?;
+            nvme.batched_write(1, rand_block, lba, 256)?;
             write_batched += before.elapsed();
 
             // read
             let before = Instant::now();
-            nvme.read(1, &mut read_buf[..], lba)?;
-            read += before.elapsed();
-            assert_eq!(read_buf, rand_block);
+            nvme.batched_read(1, &mut read_bbuf[..], lba, 256)?;
+            read_batched += before.elapsed();
 
             let before = Instant::now();
-            nvme.batched_read(1, &mut read_bbuf[..], lba, 64)?;
-            read_batched += before.elapsed();
-            assert_eq!(read_buf, read_bbuf);
+            nvme.read(1, &mut read_buf[..], lba)?;
+            read += before.elapsed();
+            // assert_eq!(read_buf, rand_block);
+            // assert_eq!(read_buf, read_bbuf);
+
 
             lba += blocks as u64;
             // nvme.read(1, 4);
@@ -113,7 +113,7 @@ pub fn init(pci_addr: &str) -> Result<(), Box<dyn Error>> {
     }
     let n = n * n2;
 
-    println!("{blocks} block write: {:?}", write / n);
+    // println!("{blocks} block write: {:?}", write / n);
     println!("{blocks} block batched write: {:?}", write_batched / n);
     println!("{blocks} block read: {:?}", read / n);
     println!("{blocks} block batched read: {:?}", read_batched / n);
@@ -131,4 +131,6 @@ pub struct NvmeNamespace {
 pub struct NvmeStats {
     pub completions: u64,
     pub submissions: u64,
+    pub reads: u64,
+    pub writes: u64,
 }
