@@ -390,9 +390,15 @@ impl NvmeDevice {
         let ptr1 = if bytes <= 4096 {
             0
         } else if bytes <= 8192 {
+<<<<<<< HEAD
             addr + 4096 // self.page_size
+=======
+            addr as u64 + 4096 // self.page_size
+>>>>>>> edaaf3cb9b398442e9e92d722522beb6f3f3de39
         } else {
-            self.prp_list.phys as u64
+            // TODOo: idk if correct
+            let offset = (addr - self.prp_list.phys as u64) / 8;
+            self.prp_list.phys as u64 + offset
         };
 
         let entry = if write {
