@@ -109,7 +109,7 @@ pub struct NvmeDevice {
     pub buffer: Dma<[u8; 2048 * 1024]>, // 2MiB of buffer
     prp_list: Dma<[u64; 512]>, // Address of PRP's, devices doesn't necessarily support 2MiB page sizes; 8 Bytes * 512 = 4096
     namespaces: HashMap<u32, NvmeNamespace>,
-    stats: NvmeStats
+    stats: NvmeStats,
 }
 
 #[allow(unused)]
@@ -135,7 +135,7 @@ impl NvmeDevice {
             buffer: Dma::allocate(crate::memory::HUGE_PAGE_SIZE, true)?,
             prp_list: Dma::allocate(8 * 512, true)?,
             namespaces: HashMap::new(),
-            stats: NvmeStats::default()
+            stats: NvmeStats::default(),
         };
 
         for i in 1..512 {
@@ -390,11 +390,7 @@ impl NvmeDevice {
         let ptr1 = if bytes <= 4096 {
             0
         } else if bytes <= 8192 {
-<<<<<<< HEAD
             addr + 4096 // self.page_size
-=======
-            addr as u64 + 4096 // self.page_size
->>>>>>> edaaf3cb9b398442e9e92d722522beb6f3f3de39
         } else {
             // TODOo: idk if correct
             let offset = (addr - self.prp_list.phys as u64) / 8;

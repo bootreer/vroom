@@ -1,3 +1,4 @@
+#![feature(stdarch_arm_hints)]
 #[allow(unused)]
 mod cmd;
 #[allow(dead_code)]
@@ -8,8 +9,8 @@ mod pci;
 #[allow(dead_code)]
 mod queues;
 
-use nvme::NvmeDevice;
 use self::pci::*;
+use nvme::NvmeDevice;
 use std::error::Error;
 use std::time::Instant;
 // use std::io::Read;
@@ -78,12 +79,12 @@ pub fn init(pci_addr: &str) -> Result<(), Box<dyn Error>> {
     let mut read_buf = vec![0; blocks * 512];
     let mut read_bbuf = vec![0; blocks * 512];
 
-
     for _ in 0..n2 {
         let mut lba = 0;
         for _ in 0..n {
-
-            let rand_block = &(0.. (512 * blocks)).map(|_| { rand::random::<u8>() }).collect::<Vec<_>>()[..];
+            let rand_block = &(0..(512 * blocks))
+                .map(|_| rand::random::<u8>())
+                .collect::<Vec<_>>()[..];
             unsafe { (*nvme.buffer.virt)[..].copy_from_slice(rand_block) };
 
             // write
@@ -105,7 +106,6 @@ pub fn init(pci_addr: &str) -> Result<(), Box<dyn Error>> {
             read += before.elapsed();
             // assert_eq!(read_buf, rand_block);
             // assert_eq!(read_buf, read_bbuf);
-
 
             lba += blocks as u64;
             // nvme.read(1, 4);
