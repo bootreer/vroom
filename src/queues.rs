@@ -2,8 +2,6 @@ use crate::cmd::NvmeCommand;
 use crate::memory::*;
 use std::error::Error;
 
-static mut PRINT: bool = true;
-
 /// NVMe spec 4.6
 /// Completion queue entry
 #[allow(dead_code)]
@@ -32,17 +30,16 @@ pub struct NvmeSubQueue {
     pub commands: Dma<[NvmeCommand; QUEUE_LENGTH]>,
     pub head: usize,
     pub tail: usize,
+    pub len: usize,
 }
 
 impl NvmeSubQueue {
-    pub fn new() -> Result<Self, Box<dyn Error>> {
-        // let commands: Dma<[NvmeCommand; QUEUE_LENGTH]> = Dma::allocate(64 * QUEUE_LENGTH, false)?;
-
+    pub fn new(len: usize) -> Result<Self, Box<dyn Error>> {
         Ok(Self {
-            // commands: Dma::allocate(64 * QUEUE_LENGTH, true)?,
             commands: Dma::allocate(crate::memory::HUGE_PAGE_SIZE, false)?,
             head: 0,
             tail: 0,
+            len: len.min(QUEUE_LENGTH) 
         })
     }
 
@@ -51,7 +48,7 @@ impl NvmeSubQueue {
     }
 
     pub fn is_full(&self) -> bool {
-        self.head == (self.tail + 1) % QUEUE_LENGTH
+        self.head == (self.tail + 1) % self.len
     }
 
     pub fn submit_checked(&mut self, entry: NvmeCommand) -> Option<usize> {
@@ -68,7 +65,7 @@ impl NvmeSubQueue {
         unsafe {
             (*self.commands.virt)[self.tail] = entry;
         }
-        self.tail = (self.tail + 1) % QUEUE_LENGTH;
+        self.tail = (self.tail + 1) % self.len;
         self.tail
     }
 
@@ -82,15 +79,17 @@ pub struct NvmeCompQueue {
     commands: Dma<[NvmeCompletion; QUEUE_LENGTH]>,
     head: usize,
     phase: bool,
+    pub len: usize,
 }
 
 // TODO: error handling
 impl NvmeCompQueue {
-    pub fn new() -> Result<Self, Box<dyn Error>> {
+    pub fn new(len: usize) -> Result<Self, Box<dyn Error>> {
         Ok(Self {
             commands: Dma::allocate(crate::memory::HUGE_PAGE_SIZE, false)?,
             head: 0,
             phase: true,
+            len: len.min(QUEUE_LENGTH) 
         })
     }
 
@@ -99,12 +98,10 @@ impl NvmeCompQueue {
 
         if ((entry.status & 1) == 1) == self.phase {
             let prev = self.head;
-            self.head = (self.head + 1) % QUEUE_LENGTH;
+            self.head = (self.head + 1) % self.len;
             if self.head == 0 {
                 self.phase = !self.phase;
             }
-
-            // println!("COMPLETION ENTRY: {:?}", entry);
             Some((self.head, entry, prev))
         } else {
             None
@@ -115,10 +112,10 @@ impl NvmeCompQueue {
     pub fn complete_n(&mut self, commands: usize) -> (usize, NvmeCompletion, usize) {
         let prev = self.head;
         self.head += commands - 1;
-        if self.head >= QUEUE_LENGTH {
+        if self.head >= self.len {
             self.phase = !self.phase;
         }
-        self.head %= QUEUE_LENGTH;
+        self.head %= self.len;
 
         let (head, entry, _) = self.complete_spin();
         (head, entry, prev)
