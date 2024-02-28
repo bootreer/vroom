@@ -1,14 +1,17 @@
 use lazy_static::lazy_static;
-use libc::{c_void, memset};
+use libc::munmap;
+use libc::c_void;
+// use std::rc::Rc;
+// use std::ptr::NonNull;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::error::Error;
 use std::io::{self, Read, Seek};
 use std::os::fd::{AsRawFd, RawFd};
-use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::{fs, mem, process, ptr};
+use std::ops::{Deref, DerefMut};
 
 // from https://www.kernel.org/doc/Documentation/x86/x86_64/mm.txt
 const X86_VA_WIDTH: u8 = 47;
@@ -28,14 +31,36 @@ lazy_static! {
 }
 
 pub struct Dma<T> {
+    // pub virt: NonNull<T>,
     pub virt: *mut T,
     pub phys: usize,
+    size: usize,
+}
+
+// should be safe
+impl<T> Deref for Dma<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        unsafe {
+            &*self.virt
+            // self.virt.as_ref()
+        }
+    }
+}
+
+impl<T> DerefMut for Dma<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        unsafe {
+            &mut *self.virt
+            // self.virt.as_mut()
+        }
+    }
 }
 
 impl<T> Dma<T> {
     /// Allocates DMA Memory on a huge page
     // TODO: vfio support?
-    #[allow(arithmetic_overflow)]
     pub fn allocate(size: usize, require_contiguous: bool) -> Result<Dma<T>, Box<dyn Error>> {
         let size = if size % HUGE_PAGE_SIZE != 0 {
             ((size >> HUGE_PAGE_BITS) + 1) << HUGE_PAGE_BITS
@@ -63,7 +88,7 @@ impl<T> Dma<T> {
                         size,
                         libc::PROT_READ | libc::PROT_WRITE,
                         libc::MAP_SHARED | libc::MAP_HUGETLB,
-                        // libc::MAP_SHARED, // cuz MAP_HUGETLB doesn't exist on macOS (for lsp lol)
+                        // libc::MAP_SHARED,
                         f.as_raw_fd(),
                         0,
                     )
@@ -72,8 +97,10 @@ impl<T> Dma<T> {
                     Err("failed to mmap huge page - are huge pages enabled and free?".into())
                 } else if unsafe { libc::mlock(ptr, size) } == 0 {
                     let memory = Dma {
+                        // virt: NonNull::new(ptr as *mut T).expect("oops"),
                         virt: ptr as *mut T,
                         phys: virt_to_phys(ptr as usize)?,
+                        size
                     };
                     Ok(memory)
                 } else {
@@ -92,6 +119,16 @@ impl<T> Dma<T> {
     }
 }
 
+// idk if required
+impl<T> Drop for Dma<T> {
+    fn drop(&mut self) {
+        unsafe {
+            // munmap(self.virt.as_ptr() as *mut c_void, self.size);
+            munmap(self.virt as *mut c_void, self.size);
+        }
+    }
+}
+
 pub struct Mempool {
     base_addr: *mut u8,
     num_entries: usize,
@@ -100,6 +137,7 @@ pub struct Mempool {
     pub(crate) free_stack: RefCell<Vec<usize>>,
 }
 
+/*
 impl Mempool {
     /// Allocates a new `Mempool`.
     ///
@@ -145,6 +183,7 @@ impl Mempool {
         Ok(pool)
     }
 }
+*/
 
 /// Translates a virtual address to its physical counterpart
 pub(crate) fn virt_to_phys(addr: usize) -> Result<usize, Box<dyn Error>> {

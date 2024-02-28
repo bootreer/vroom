@@ -2,15 +2,16 @@
 #[allow(unused)]
 mod cmd;
 #[allow(dead_code)]
-mod memory;
+pub mod memory;
 mod nvme;
 #[allow(dead_code)]
 mod pci;
 #[allow(dead_code)]
 mod queues;
 
+pub use queues::QUEUE_LENGTH;
+pub use memory::HUGE_PAGE_SIZE;
 use pci::*;
-use queues::QUEUE_LENGTH;
 use nvme::NvmeDevice;
 use std::error::Error;
 
@@ -55,7 +56,6 @@ pub fn init(pci_addr: &str) -> Result<NvmeDevice, Box<dyn Error>> {
 
     let mut nvme = NvmeDevice::init(pci_addr)?;
     nvme.identify_controller()?;
-    nvme.create_io_queue_pair(QUEUE_LENGTH)?;
     let ns = nvme.identify_namespace_list(0);
     for n in ns {
         println!("ns_id: {n}");

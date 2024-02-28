@@ -22,6 +22,7 @@ pub struct NvmeCompletion {
     pub status: u16,
 }
 
+/// maximum amount of submission entries on a 2MiB huge page
 pub const QUEUE_LENGTH: usize = 1024;
 
 /// Submission queue
@@ -62,9 +63,8 @@ impl NvmeSubQueue {
     #[inline(always)]
     pub fn submit(&mut self, entry: NvmeCommand) -> usize {
         // println!("SUBMISSION ENTRY: {:?}", entry);
-        unsafe {
-            (*self.commands.virt)[self.tail] = entry;
-        }
+        self.commands[self.tail] = entry;
+
         self.tail = (self.tail + 1) % self.len;
         self.tail
     }
@@ -94,7 +94,7 @@ impl NvmeCompQueue {
     }
 
     pub fn complete(&mut self) -> Option<(usize, NvmeCompletion, usize)> {
-        let entry: NvmeCompletion = unsafe { (*self.commands.virt)[self.head] };
+        let entry: NvmeCompletion = self.commands[self.head];
 
         if ((entry.status & 1) == 1) == self.phase {
             let prev = self.head;
@@ -125,9 +125,8 @@ impl NvmeCompQueue {
         loop {
             if let Some(val) = self.complete() {
                 return val;
-            } else {
-                super::pause();
             }
+            super::pause();
         }
     }
 

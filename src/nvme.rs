@@ -139,9 +139,7 @@ impl NvmeDevice {
         };
 
         for i in 1..512 {
-            unsafe {
-                (*dev.prp_list.virt)[i - 1] = (dev.buffer.phys + i * 4096) as u64;
-            }
+            dev.prp_list[i - 1] = (dev.buffer.phys + i * 4096) as u64;
         }
 
         println!("CAP: 0x{:x}", dev.get_reg64(NvmeRegs64::CAP as u64));
@@ -210,7 +208,7 @@ impl NvmeDevice {
 
         println!("Dumping identify controller");
         let mut serial = String::new();
-        let data = unsafe { *self.buffer.virt };
+        let data = &self.buffer;
 
         for &b in &data[4..24] {
             if b == 0 {
@@ -256,18 +254,7 @@ impl NvmeDevice {
                 queue.get_addr(),
                 (len - 1) as u16,
             )
-        });
-        let status = comp.status >> 1;
-        if status != 0 {
-            eprintln!(
-                "Status: 0x{:x}, Status Code 0x{:x}, Status Code Type: 0x{:x}",
-                status,
-                status & 0xFF,
-                (status >> 8) & 0x7
-            );
-            return Err("Requesting i/o completion queue failed".into());
-        }
-
+        })?;
         self.comp_queues.push(queue);
 
         println!("Requesting i/o submission queue");
@@ -281,20 +268,9 @@ impl NvmeDevice {
                 (len - 1) as u16,
                 cq_id as u16,
             )
-        });
-        let status = comp.status >> 1;
-        if status != 0 {
-            eprintln!(
-                "Status: 0x{:x}, Status Code 0x{:x}, Status Code Type: 0x{:x}",
-                status,
-                status & 0xFF,
-                (status >> 8) & 0x7
-            );
-            return Err("Requesting i/o submission queue failed".into());
-        }
+        })?;
 
         self.sub_queues.push(queue);
-
         Ok(())
     }
 
@@ -305,6 +281,7 @@ impl NvmeDevice {
 
         // TODO: idk bout this/don't hardcode len
         let data: &[u32] =
+            // unsafe { std::slice::from_raw_parts(self.buffer.virt.as_ptr() as *const u32, 1024) };
             unsafe { std::slice::from_raw_parts(self.buffer.virt as *const u32, 1024) };
 
         data.iter()
@@ -346,41 +323,39 @@ impl NvmeDevice {
         namespace
     }
 
-    pub fn write_string(&mut self, data: String, lba: u64) -> Result<(), Box<dyn Error>> {
-        self.write_raw(data.as_bytes(), lba)
-    }
-
-    pub fn write_raw(&mut self, data: &[u8], mut lba: u64) -> Result<(), Box<dyn Error>> {
+    // TODO: swap data with len?
+    pub fn write_raw(&mut self, data: &[u8], mut lba: u64, mut addr: u64) -> Result<(), Box<dyn Error>> {
         let ns = *self.namespaces.get(&1).unwrap();
-        // println!("data len: {}", data.len());
 
-        // for chunk in data.chunks(HUGE_PAGE_SIZE) {
-        for chunk in data.chunks(128 * 4096) {
-            // unsafe {
-            //     (*self.buffer.virt)[..chunk.len()].copy_from_slice(chunk);
-            // }
-            let blocks = (chunk.len() + ns.block_size as usize - 1) / ns.block_size as usize;
-            self.namespace_io(&ns, blocks as u64, lba, true)?;
-            lba += blocks as u64;
+        // for chunk in data.chunks(128 * 4096) {
+        for chunk in data.chunks(2 * 4096) {
+            let blocks = (chunk.len() as u64 + ns.block_size - 1) / ns.block_size;
+            self.namespace_io(&ns, blocks as u64, lba, addr, true)?;
+
+            addr += blocks * ns.block_size;
+            lba += blocks;
         }
 
         Ok(())
     }
 
+    // TODO: swap data with len?
     pub fn read(
         &mut self,
         ns_id: u32,
-        dest: &mut [u8],
+        dest: &[u8],
         mut lba: u64,
+        mut addr: u64,
     ) -> Result<(), Box<dyn Error>> {
         let ns = *self.namespaces.get(&ns_id).unwrap();
 
-        // for chunk in dest.chunks_mut(HUGE_PAGE_SIZE) {
-        for chunk in dest.chunks_mut(128 * 4096) {
-            let blocks = (chunk.len() + ns.block_size as usize - 1) / ns.block_size as usize;
-            self.namespace_io(&ns, blocks as u64, lba, false)?;
-            // chunk.copy_from_slice(&unsafe { (*self.buffer.virt) }[..chunk.len()]);
-            lba += blocks as u64;
+        // for chunk in dest.chunks(128 * 4096) {
+        for chunk in dest.chunks(2 * 4096) {
+            let blocks = (chunk.len() as u64 + ns.block_size - 1) / ns.block_size;
+            self.namespace_io(&ns, blocks as u64, lba, addr, false)?;
+
+            addr += blocks * ns.block_size;
+            lba += blocks;
         }
         Ok(())
     }
@@ -524,6 +499,7 @@ impl NvmeDevice {
         ns: &NvmeNamespace,
         blocks: u64,
         lba: u64,
+        addr: u64,
         write: bool,
     ) -> Result<(), Box<dyn Error>> {
         assert!(blocks > 0);
@@ -536,9 +512,12 @@ impl NvmeDevice {
         let ptr1 = if bytes <= 4096 {
             0
         } else if bytes <= 8192 {
-            self.buffer.phys as u64 + 4096 // self.page_size
+            // self.buffer.phys as u64 + 4096 // self.page_size
+            addr + 4096 // self.page_size
         } else {
-            self.prp_list.phys as u64
+            // self.prp_list.phys as u64
+            eprintln!("tough luck");
+            addr + 4096
         };
 
         let entry = if write {
@@ -547,7 +526,8 @@ impl NvmeDevice {
                 ns.id,
                 lba,
                 blocks as u16 - 1,
-                self.buffer.phys as u64,
+                // self.buffer.phys as u64,
+                addr as u64,
                 ptr1,
             )
         } else {
@@ -556,7 +536,8 @@ impl NvmeDevice {
                 ns.id,
                 lba,
                 blocks as u16 - 1,
-                self.buffer.phys as u64,
+                // self.buffer.phys as u64,
+                addr as u64,
                 ptr1,
             )
         };
@@ -573,14 +554,24 @@ impl NvmeDevice {
     pub fn submit_and_complete_admin<F: FnOnce(u16, usize) -> NvmeCommand>(
         &mut self,
         cmd_init: F,
-    ) -> NvmeCompletion {
+    ) -> Result<NvmeCompletion, Box<dyn Error>> {
         let cid = self.admin_sq.tail;
         let tail = self.admin_sq.submit(cmd_init(cid as u16, self.buffer.phys));
         self.write_reg_idx(NvmeArrayRegs::SQyTDBL, 0, tail as u32);
 
         let (head, entry, _) = self.admin_cq.complete_spin();
         self.write_reg_idx(NvmeArrayRegs::CQyHDBL, 0, head as u32);
-        entry
+        let status = entry.status >> 1;
+        if status != 0 {
+            eprintln!(
+                "Status: 0x{:x}, Status Code 0x{:x}, Status Code Type: 0x{:x}",
+                status,
+                status & 0xFF,
+                (status >> 8) & 0x7
+            );
+            return Err("Requesting i/o completion queue failed".into());
+        }
+        Ok(entry)
     }
 
     /// Sets Queue `qid` Tail Doorbell to `val`
