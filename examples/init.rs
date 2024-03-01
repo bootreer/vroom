@@ -23,7 +23,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let n = 10;
     let n2 = 1000;
     let blocks = 8;
-    let mut buffer: Dma<[u8; HUGE_PAGE_SIZE]> = Dma::allocate(HUGE_PAGE_SIZE, true)?;
+    let mut buffer: Dma<u8> = Dma::allocate(HUGE_PAGE_SIZE, true)?;
 
     let mut read = std::time::Duration::new(0, 0);
     let mut write = std::time::Duration::new(0, 0);

@@ -1,11 +1,9 @@
 use crate::cmd::NvmeCommand;
 use crate::memory::Dma;
-use crate::memory::HUGE_PAGE_SIZE;
+use crate::{HUGE_PAGE_SIZE, NvmeNamespace, NvmeStats};
 // use crate::memory::HUGE_PAGE_SIZE;
 use crate::pci::pci_map_resource;
 use crate::queues::*;
-use crate::NvmeNamespace;
-use crate::NvmeStats;
 use std::collections::HashMap;
 use std::error::Error;
 
@@ -106,7 +104,7 @@ pub struct NvmeDevice {
     // maybe map?
     sub_queues: Vec<NvmeSubQueue>,
     comp_queues: Vec<NvmeCompQueue>,
-    pub buffer: Dma<[u8; 2048 * 1024]>, // 2MiB of buffer
+    buffer: Dma<[u8; 2048 * 1024]>, // 2MiB of buffer
     prp_list: Dma<[u64; 512]>, // Address of PRP's, devices doesn't necessarily support 2MiB page sizes; 8 Bytes * 512 = 4096
     namespaces: HashMap<u32, NvmeNamespace>,
     pub stats: NvmeStats,
