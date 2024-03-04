@@ -1,8 +1,7 @@
 use std::env;
 use std::process;
 use vroom::QUEUE_LENGTH;
-use vroom::HUGE_PAGE_SIZE;
-use vroom::memory::Dma;
+use vroom::memory::*;
 
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = env::args();
@@ -20,23 +19,30 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     nvme.create_io_queue_pair(QUEUE_LENGTH)?;
 
     // Testing stuff
+    // let blocks = 8;
+
+    let mut buffer: Dma<u8> = Dma::allocate(HUGE_PAGE_SIZE, true)?;
+    let n = "hello world".len();
+    buffer[..n].copy_from_slice(b"hello world");
+    nvme.write(&buffer.slice(0..n), 0)?;
+
+    buffer[..n].fill_with(Default::default);
+    nvme.read(&buffer.slice(0..n), 0)?;
+
+    println!("{}", std::str::from_utf8(&buffer[..n])?);
+
+    /*
     let n = 10;
     let n2 = 1000;
-    let blocks = 8;
-    let mut buffer: Dma<u8> = Dma::allocate(HUGE_PAGE_SIZE, true)?;
-
     let mut read = std::time::Duration::new(0, 0);
     let mut write = std::time::Duration::new(0, 0);
-    //  let mut write_batched = std::time::Duration::new(0, 0);
-    //  let mut read_batched = std::time::Duration::new(0, 0);
 
-    let mut rng = rand::thread_rng();
-    use rand::seq::SliceRandom;
-
+    // let mut rng = rand::thread_rng();
+    // use rand::seq::SliceRandom;
     let mut seq: Vec<u64> = Vec::from_iter(0..n);
 
     for _ in 0..n2 {
-        seq.shuffle(&mut rng);
+        // seq.shuffle(&mut rng);
         let lba = 0;
         for i in &seq {
             let rand_block = &(0..(512 * blocks))
@@ -47,25 +53,15 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // write
             let before = std::time::Instant::now();
-            nvme.write_raw(rand_block, lba + (*i * blocks as u64), buffer.phys as u64)?;
+            nvme.write(&buffer, lba + (*i * blocks as u64))?;
             write += before.elapsed();
-
-            //  let before = Instant::now();
-            //  nvme.batched_write(1, rand_block, lba, 256)?;
-            //  write_batched += before.elapsed();
-
-            // read
-            //  let before = Instant::now();
-            //  nvme.batched_read(1, &mut read_bbuf[..], lba, 256)?;
-            //  read_batched += before.elapsed();
 
             buffer[..rand_block.len()].fill_with(Default::default);
             let before = std::time::Instant::now();
             nvme.read(
                 1,
-                &buffer[..rand_block.len()],
+                &buffer,
                 lba + (*i * blocks as u64),
-                buffer.phys as u64,
             )?;
             read += before.elapsed();
 
@@ -82,5 +78,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         write,
         read + write
     );
+    */
+
     Ok(())
 }

@@ -1,14 +1,13 @@
 use crate::cmd::NvmeCommand;
-use crate::memory::Dma;
+use crate::memory::{Dma, DmaSlice};
 use crate::{HUGE_PAGE_SIZE, NvmeNamespace, NvmeStats};
-// use crate::memory::HUGE_PAGE_SIZE;
 use crate::pci::pci_map_resource;
 use crate::queues::*;
 use std::collections::HashMap;
 use std::error::Error;
 
 // clippy doesnt like this
-#[allow(non_camel_case_types, unused)]
+#[allow(unused, clippy::upper_case_acronyms)]
 #[derive(Copy, Clone, Debug)]
 pub enum NvmeRegs32 {
     VS = 0x8,        // Version
@@ -31,7 +30,7 @@ pub enum NvmeRegs32 {
     PMRSWTP = 0xE10, // PMem Sustained Write Throughput
 }
 
-#[allow(non_camel_case_types, unused)]
+#[allow(unused, clippy::upper_case_acronyms)]
 #[derive(Copy, Clone, Debug)]
 pub enum NvmeRegs64 {
     CAP = 0x0,      // Controller Capabilities
@@ -93,6 +92,12 @@ struct IdentifyNamespaceData {
 }
 
 #[allow(unused)]
+pub struct NvmeQueuePair {
+    id: u16,
+    sub_queue: NvmeSubQueue,
+    comp_queue: NvmeCompQueue,
+}
+
 pub struct NvmeDevice {
     pci_addr: String,
     addr: *mut u8,
@@ -104,7 +109,7 @@ pub struct NvmeDevice {
     // maybe map?
     sub_queues: Vec<NvmeSubQueue>,
     comp_queues: Vec<NvmeCompQueue>,
-    buffer: Dma<[u8; 2048 * 1024]>, // 2MiB of buffer
+    buffer: Dma<u8>, // 2MiB of buffer
     prp_list: Dma<[u64; 512]>, // Address of PRP's, devices doesn't necessarily support 2MiB page sizes; 8 Bytes * 512 = 4096
     namespaces: HashMap<u32, NvmeNamespace>,
     pub stats: NvmeStats,
@@ -241,14 +246,16 @@ impl NvmeDevice {
         Ok(())
     }
 
-    pub fn create_io_queue_pair(&mut self, len: usize) -> Result<(), Box<dyn Error>> {
+    // 1 to 1 Submission/Completion Queue Mapping
+    // TODO: return qpair instead?
+    pub fn create_io_queue_pair(&mut self, len: usize) -> Result<u16, Box<dyn Error>> {
         println!("Requesting i/o completion queue");
-        let cq_id = self.comp_queues.len() + 1;
+        let q_id = self.comp_queues.len() as u16 + 1;
         let queue = NvmeCompQueue::new(len)?;
         let comp = self.submit_and_complete_admin(|c_id, _| {
             NvmeCommand::create_io_completion_queue(
                 c_id,
-                cq_id as u16,
+                q_id,
                 queue.get_addr(),
                 (len - 1) as u16,
             )
@@ -257,19 +264,18 @@ impl NvmeDevice {
 
         println!("Requesting i/o submission queue");
         let queue = NvmeSubQueue::new(len)?;
-        let q_id = self.sub_queues.len() + 1;
         let comp = self.submit_and_complete_admin(|c_id, _| {
             NvmeCommand::create_io_submission_queue(
                 c_id,
-                q_id as u16,
+                q_id,
                 queue.get_addr(),
                 (len - 1) as u16,
-                cq_id as u16,
+                q_id,
             )
         })?;
 
         self.sub_queues.push(queue);
-        Ok(())
+        Ok(q_id)
     }
 
     pub fn identify_namespace_list(&mut self, base: u32) -> Vec<u32> {
@@ -321,39 +327,94 @@ impl NvmeDevice {
         namespace
     }
 
-    // TODO: swap data with len?
-    pub fn write_raw(&mut self, data: &[u8], mut lba: u64, mut addr: u64) -> Result<(), Box<dyn Error>> {
+    // pass prp list?
+    pub fn write(&mut self, data: &impl DmaSlice, mut lba: u64) -> Result<(), Box<dyn Error>> {
         let ns = *self.namespaces.get(&1).unwrap();
 
-        // for chunk in data.chunks(128 * 4096) {
         for chunk in data.chunks(2 * 4096) {
-            let blocks = (chunk.len() as u64 + ns.block_size - 1) / ns.block_size;
-            self.namespace_io(&ns, blocks as u64, lba, addr, true)?;
-
-            addr += blocks * ns.block_size;
+            let blocks = (chunk.slice.len() as u64 + ns.block_size - 1) / ns.block_size;
+            self.namespace_io(&ns, blocks, lba, chunk.phys_addr as u64, true)?;
             lba += blocks;
         }
 
         Ok(())
     }
 
-    // TODO: swap data with len?
     pub fn read(
         &mut self,
-        ns_id: u32,
-        dest: &[u8],
+        dest: &impl DmaSlice,
         mut lba: u64,
-        mut addr: u64,
+    ) -> Result<(), Box<dyn Error>> {
+        let ns = *self.namespaces.get(&1).unwrap();
+
+        for chunk in dest.chunks(2 * 4096) {
+            let blocks = (chunk.slice.len() as u64 + ns.block_size - 1) / ns.block_size;
+            self.namespace_io(&ns, blocks, lba, chunk.phys_addr as u64, false)?;
+            lba += blocks;
+        }
+        Ok(())
+    }
+
+    pub fn submit_io_diy(&mut self, qpair: &mut NvmeQueuePair, data: &impl DmaSlice, mut lba: u64, write: bool) -> Result<u32, Box<dyn Error>> {
+        let ns = *self.namespaces.get(&1).unwrap();
+        let mut req = 0;
+        let io_q = &mut qpair.sub_queue;
+
+        for chunk in data.chunks(2 * 4096) {
+            let blocks = (chunk.slice.len() as u64 + ns.block_size - 1) / ns.block_size;
+
+            let addr = chunk.phys_addr as u64;
+            let bytes = blocks * ns.block_size;
+            let ptr1 = if bytes <= 4096 {
+                0
+            } else {
+                addr + 4096 // self.page_size
+            };
+            let entry = if write {
+                NvmeCommand::io_write(io_q.tail as u16, ns.id, lba, blocks as u16 - 1, addr, ptr1)
+            } else {
+                NvmeCommand::io_read(io_q.tail as u16, ns.id, lba, blocks as u16 - 1, addr, ptr1)
+            };
+            let tail = io_q.submit(entry);
+            self.write_reg_idx(NvmeArrayRegs::SQyTDBL, qpair.id, tail as u32);
+
+            self.stats.submissions += 1;
+            lba += blocks;
+            req += 1;
+        }
+
+        Ok(req)
+    }
+
+    pub fn write_copied(&mut self, data: &[u8], mut lba: u64) -> Result<(), Box<dyn Error>> {
+        let ns = *self.namespaces.get(&1).unwrap();
+
+        // for chunk in data.chunks(128 * 4096) {
+        for chunk in data.chunks(2 * 4096) {
+            self.buffer[..chunk.len()].copy_from_slice(chunk);
+            let blocks = (chunk.len() as u64 + ns.block_size - 1) / ns.block_size;
+            self.namespace_io(&ns, blocks, lba, self.buffer.phys as u64, true)?;
+            lba += blocks;
+        }
+
+        Ok(())
+    }
+
+    pub fn read_copied(
+        &mut self,
+        ns_id: u32,
+        dest: &mut [u8],
+        mut lba: u64,
     ) -> Result<(), Box<dyn Error>> {
         let ns = *self.namespaces.get(&ns_id).unwrap();
 
-        // for chunk in dest.chunks(128 * 4096) {
-        for chunk in dest.chunks(2 * 4096) {
+        // for chunk in dest.chunks_mut(128 * 4096) {
+        for chunk in dest.chunks_mut(2 * 4096) {
             let blocks = (chunk.len() as u64 + ns.block_size - 1) / ns.block_size;
-            self.namespace_io(&ns, blocks as u64, lba, addr, false)?;
+            self.namespace_io(&ns, blocks, lba, self.buffer.phys as u64, false)?;
 
-            addr += blocks * ns.block_size;
             lba += blocks;
+            chunk.copy_from_slice(&self.buffer[..chunk.len()]);
         }
         Ok(())
     }
@@ -425,7 +486,7 @@ impl NvmeDevice {
         let q_id = 1;
 
         for chunk in data.chunks(HUGE_PAGE_SIZE) {
-            // unsafe { (*self.buffer.virt)[..chunk.len()].copy_from_slice(chunk) }
+            self.buffer[..chunk.len()].copy_from_slice(chunk);
             let tail = self.sub_queues[q_id - 1].tail;
 
             let batch_len = std::cmp::min(batch_len, chunk.len() as u64 / block_size);
@@ -487,7 +548,7 @@ impl NvmeDevice {
                 lba += blocks;
             }
             self.sub_queues[0].head = self.complete_io(batch_len).unwrap() as usize;
-            // chunk.copy_from_slice(&unsafe { (*self.buffer.virt) }[..chunk.len()]);
+            chunk.copy_from_slice(&self.buffer[..chunk.len()]);
         }
         Ok(())
     }
@@ -524,8 +585,7 @@ impl NvmeDevice {
                 ns.id,
                 lba,
                 blocks as u16 - 1,
-                // self.buffer.phys as u64,
-                addr as u64,
+                addr,
                 ptr1,
             )
         } else {
@@ -534,8 +594,7 @@ impl NvmeDevice {
                 ns.id,
                 lba,
                 blocks as u16 - 1,
-                // self.buffer.phys as u64,
-                addr as u64,
+                addr,
                 ptr1,
             )
         };
@@ -574,7 +633,6 @@ impl NvmeDevice {
 
     /// Sets Queue `qid` Tail Doorbell to `val`
     fn write_reg_idx(&self, reg: NvmeArrayRegs, qid: u16, val: u32) {
-        // TODO: catch invalid qid i guess
         match reg {
             NvmeArrayRegs::SQyTDBL => unsafe {
                 std::ptr::write_volatile(

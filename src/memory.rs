@@ -1,7 +1,5 @@
 use lazy_static::lazy_static;
-use libc::munmap;
-use libc::c_void;
-use core::slice;
+use std::slice;
 // use std::rc::Rc;
 // use std::cell::RefCell;
 use std::collections::HashMap;
@@ -11,7 +9,7 @@ use std::os::fd::{AsRawFd, RawFd};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::{fs, mem, process, ptr};
-use std::ops::{Deref, DerefMut, Index, IndexMut, Range, RangeTo};
+use std::ops::{Deref, DerefMut, Index, IndexMut, Range, RangeTo, RangeFull};
 
 // from https://www.kernel.org/doc/Documentation/x86/x86_64/mm.txt
 const X86_VA_WIDTH: u8 = 47;
@@ -33,7 +31,7 @@ lazy_static! {
 pub struct Dma<T> {
     pub virt: *mut T,
     pub phys: usize,
-    size: usize,
+    pub size: usize,
 }
 
 // should be safe
@@ -55,11 +53,15 @@ impl<T> DerefMut for Dma<T> {
     }
 }
 
-// Trait for types that can be viewed as consecutive DMA slices.
+// Trait for types that can be viewed as DMA slices
 pub trait DmaSlice {
-    fn chunks(&self, chunk_size: usize) -> DmaChunks<u8>;
+    type Item;
+
+    fn chunks(&self, bytes: usize) -> DmaChunks<u8>;
+    fn slice(&self, range: Range<usize>) -> Self::Item;
 }
 
+// mildly overengineered lol
 pub struct DmaChunks<'a, T> {
     current_offset: usize,
     chunk_size: usize,
@@ -84,6 +86,36 @@ impl<'a, T> Iterator for DmaChunks<'a, T> {
                 slice: unsafe { std::slice::from_raw_parts_mut(offset_ptr, len) },
             })
         }
+    }
+}
+
+// Represents a chunk obtained from a Dma<T>, with physical address and slice.
+pub struct DmaChunk<'a, T> {
+    pub phys_addr: usize,
+    pub slice: &'a mut [T],
+}
+
+impl DmaSlice for Dma<u8> {
+    type Item = Dma<u8>;
+    fn chunks(&self, bytes: usize) -> DmaChunks<u8> {
+        DmaChunks {
+            current_offset: 0,
+            chunk_size: bytes,
+            dma: self,
+        }
+    }
+
+    fn slice(&self, index: Range<usize>) -> Self::Item {
+        assert!(index.end <= self.size, "Index out of bounds");
+
+        unsafe {
+            Dma {
+                virt: self.virt.add(index.start),
+                phys: self.phys + index.start,
+                size: self.size - (index.end - index.start)
+            }
+        }
+
     }
 }
 
@@ -112,36 +144,29 @@ impl Index<RangeTo<usize>> for Dma<u8> {
     type Output = [u8];
 
     fn index(&self, index: RangeTo<usize>) -> &Self::Output {
-        assert!(index.end <= self.size, "Index out of bounds");
-
-        unsafe {
-            slice::from_raw_parts(self.virt, index.end)
-        }
+        &self[0..index.end]
     }
 }
 
 impl IndexMut<RangeTo<usize>> for Dma<u8> {
     fn index_mut(&mut self, index: RangeTo<usize>) -> &mut Self::Output {
-        assert!(index.end <= self.size, "Index out of bounds");
-        unsafe {
-            slice::from_raw_parts_mut(self.virt, index.end)
-        }
+        &mut self[0..index.end]
     }
 }
 
-// Represents a chunk obtained from a Dma<T>, with physical address and slice.
-pub struct DmaChunk<'a, T> {
-    pub phys_addr: usize,
-    pub slice: &'a mut [T],
+impl Index<RangeFull> for Dma<u8> {
+    type Output = [u8];
+
+    fn index(&self, _: RangeFull) -> &Self::Output {
+        &self[0..self.size]
+    }
 }
 
-impl DmaSlice for Dma<u8> {
-    fn chunks(&self, chunk_size: usize) -> DmaChunks<u8> {
-        DmaChunks {
-            current_offset: 0,
-            chunk_size,
-            dma: self,
-        }
+impl IndexMut<RangeFull> for Dma<u8> {
+    fn index_mut(&mut self, _: RangeFull) -> &mut Self::Output {
+        let len = self.size;
+        &mut self[0..len]
+
     }
 }
 
@@ -202,16 +227,6 @@ impl<T> Dma<T> {
                 ),
             ))),
             Err(e) => Err(Box::new(e)),
-        }
-    }
-}
-
-// idk if required
-impl<T> Drop for Dma<T> {
-    fn drop(&mut self) {
-        unsafe {
-            // munmap(self.virt.as_ptr() as *mut c_void, self.size);
-            munmap(self.virt as *mut c_void, self.size);
         }
     }
 }
