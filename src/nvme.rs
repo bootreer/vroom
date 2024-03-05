@@ -111,7 +111,7 @@ pub struct NvmeDevice {
     comp_queues: Vec<NvmeCompQueue>,
     buffer: Dma<u8>, // 2MiB of buffer
     prp_list: Dma<[u64; 512]>, // Address of PRP's, devices doesn't necessarily support 2MiB page sizes; 8 Bytes * 512 = 4096
-    namespaces: HashMap<u32, NvmeNamespace>,
+    pub namespaces: HashMap<u32, NvmeNamespace>,
     pub stats: NvmeStats,
 }
 
@@ -355,9 +355,10 @@ impl NvmeDevice {
         Ok(())
     }
 
-    pub fn submit_io_diy(&mut self, qpair: &mut NvmeQueuePair, data: &impl DmaSlice, mut lba: u64, write: bool) -> Result<u32, Box<dyn Error>> {
+    pub fn submit_io_diy(&mut self, qpair: &mut NvmeQueuePair, data: &impl DmaSlice, mut lba: u64, write: bool) -> Result<(u32, usize), Box<dyn Error>> {
         let ns = *self.namespaces.get(&1).unwrap();
         let mut req = 0;
+        let mut tail = 0;
         let io_q = &mut qpair.sub_queue;
 
         for chunk in data.chunks(2 * 4096) {
@@ -375,7 +376,7 @@ impl NvmeDevice {
             } else {
                 NvmeCommand::io_read(io_q.tail as u16, ns.id, lba, blocks as u16 - 1, addr, ptr1)
             };
-            let tail = io_q.submit(entry);
+            tail = io_q.submit(entry);
             self.write_reg_idx(NvmeArrayRegs::SQyTDBL, qpair.id, tail as u32);
 
             self.stats.submissions += 1;
@@ -383,7 +384,11 @@ impl NvmeDevice {
             req += 1;
         }
 
-        Ok(req)
+        Ok((req, tail))
+    }
+
+    pub fn knock_knock(&self, qpair: &NvmeQueuePair, val: u32) {
+        self.write_reg_idx(NvmeArrayRegs::CQyHDBL, qpair.id, val)
     }
 
     pub fn write_copied(&mut self, data: &[u8], mut lba: u64) -> Result<(), Box<dyn Error>> {

@@ -112,7 +112,7 @@ impl DmaSlice for Dma<u8> {
             Dma {
                 virt: self.virt.add(index.start),
                 phys: self.phys + index.start,
-                size: self.size - (index.end - index.start)
+                size: (index.end - index.start)
             }
         }
 
