@@ -28,19 +28,21 @@ pub const QUEUE_LENGTH: usize = 1024;
 /// Submission queue
 pub struct NvmeSubQueue {
     // TODO: switch to mempool for larger queue
-    pub commands: Dma<[NvmeCommand; QUEUE_LENGTH]>,
+    commands: Dma<[NvmeCommand; QUEUE_LENGTH]>,
     pub head: usize,
     pub tail: usize,
-    pub len: usize,
+    len: usize,
+    pub doorbell: usize,
 }
 
 impl NvmeSubQueue {
-    pub fn new(len: usize) -> Result<Self, Box<dyn Error>> {
+    pub fn new(len: usize, doorbell: usize) -> Result<Self, Box<dyn Error>> {
         Ok(Self {
             commands: Dma::allocate(crate::memory::HUGE_PAGE_SIZE, false)?,
             head: 0,
             tail: 0,
-            len: len.min(QUEUE_LENGTH) 
+            len: len.min(QUEUE_LENGTH),
+            doorbell
         })
     }
 
@@ -79,17 +81,19 @@ pub struct NvmeCompQueue {
     commands: Dma<[NvmeCompletion; QUEUE_LENGTH]>,
     head: usize,
     phase: bool,
-    pub len: usize,
+    len: usize,
+    pub doorbell: usize,
 }
 
 // TODO: error handling
 impl NvmeCompQueue {
-    pub fn new(len: usize) -> Result<Self, Box<dyn Error>> {
+    pub fn new(len: usize, doorbell: usize) -> Result<Self, Box<dyn Error>> {
         Ok(Self {
             commands: Dma::allocate(crate::memory::HUGE_PAGE_SIZE, false)?,
             head: 0,
             phase: true,
-            len: len.min(QUEUE_LENGTH) 
+            len: len.min(QUEUE_LENGTH),
+            doorbell
         })
     }
 

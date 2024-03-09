@@ -12,7 +12,7 @@ mod queues;
 pub use queues::QUEUE_LENGTH;
 pub use memory::HUGE_PAGE_SIZE;
 use pci::*;
-use nvme::{NvmeDevice, NvmeQueuePair};
+use nvme::NvmeDevice;
 use std::error::Error;
 
 #[cfg(target_arch = "aarch64")]
