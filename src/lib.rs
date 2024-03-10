@@ -3,6 +3,7 @@
 mod cmd;
 #[allow(dead_code)]
 pub mod memory;
+#[allow(dead_code)]
 mod nvme;
 #[allow(dead_code)]
 mod pci;
@@ -11,8 +12,8 @@ mod queues;
 
 pub use queues::QUEUE_LENGTH;
 pub use memory::HUGE_PAGE_SIZE;
+pub use nvme::NvmeDevice;
 use pci::*;
-use nvme::NvmeDevice;
 use std::error::Error;
 
 #[cfg(target_arch = "aarch64")]

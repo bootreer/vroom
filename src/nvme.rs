@@ -181,6 +181,10 @@ pub struct NvmeDevice {
     q_id: u16,
 }
 
+// TODO
+unsafe impl Send for NvmeDevice {}
+unsafe impl Sync for NvmeDevice {}
+
 #[allow(unused)]
 impl NvmeDevice {
     pub fn init(pci_addr: &str) -> Result<Self, Box<dyn Error>> {
