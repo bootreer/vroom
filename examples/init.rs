@@ -78,30 +78,65 @@ fn qd32(mut nvme: NvmeDevice) -> Result<NvmeDevice, Box<dyn Error>> {
         let max_lba = ns_blocks.clone();
         let mut nvme = Arc::clone(&nvme);
 
-        let handle = thread::spawn(move || {
+        let handle = thread::spawn(move || -> (std::time::Duration, std::time::Duration) {
             let mut rng = rand::thread_rng();
             let seq = &(0..2_500_000).map(|_| rng.gen_range(0..*max_lba)).collect::<Vec<u64>>()[..];
+
+            let blocks = 8;
+            let bytes = 512 * blocks;
 
             let mut read = std::time::Duration::new(0, 0);
             let mut write = std::time::Duration::new(0, 0);
             let mut buffer: Dma<u8> = Dma::allocate(HUGE_PAGE_SIZE, true).unwrap();
 
-            let qpair = nvme.lock().unwrap().create_io_queue_pair(32).unwrap();
+            let mut qpair = nvme.lock().unwrap().create_io_queue_pair(32).unwrap();
 
             // TODO
             for &lba in seq {
+                if qpair.sub_queue.is_full() {
+                    if let Some(head) = vroom::complete_io(&mut qpair) {
+                        qpair.sub_queue.head = head as usize
+                    } else {
+                        eprintln!("shit"); 
+                        continue
+                    }
+                }
+
+                let rand_block = &(0..bytes).map(|_| rand::random::<u8>()).collect::<Vec<_>>()[..];
+
+                buffer[..rand_block.len()].copy_from_slice(rand_block);
+
+                // write
                 let before = std::time::Instant::now();
+                // nvme.write(&buffer.slice(0..bytes as usize), lba)?;
+                vroom::submit_io(&mut qpair.sub_queue, &buffer.slice(0..rand_block.len()), lba, true);
+                write += before.elapsed();
+
+                /* 
+                buffer[..rand_block.len()].fill_with(Default::default);
+                let before = std::time::Instant::now();
+                vroom::submit_io(&mut qpair.sub_queue, &buffer.slice(0..rand_block.len()), lba, false);
                 read += before.elapsed();
+                */
             }
+            (read, write)
         });
         threads.push(handle);
     }
 
-    threads.into_iter().for_each(|thread| {
-    thread
-        .join()
-        .expect("The thread creating or execution failed !")
+    let (read, write) = threads.into_iter().fold((std::time::Duration::ZERO, std::time::Duration::ZERO), |acc, thread| {
+        let res = thread
+            .join()
+            .expect("The thread creation or execution failed!");
+        (acc.0 + res.0, acc.1 + res.1)
     });
+
+    println!(
+        "read time: {:?}; write time: {:?}; total: {:?}",
+        read,
+        write,
+        read + write
+    );
 
     // lol
     match Arc::try_unwrap(nvme) {

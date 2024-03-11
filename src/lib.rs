@@ -12,7 +12,7 @@ mod queues;
 
 pub use queues::QUEUE_LENGTH;
 pub use memory::HUGE_PAGE_SIZE;
-pub use nvme::NvmeDevice;
+pub use nvme::{NvmeDevice, submit_io, complete_io};
 use pci::*;
 use std::error::Error;
 

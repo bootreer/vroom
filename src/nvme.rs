@@ -94,7 +94,7 @@ struct IdentifyNamespaceData {
 #[allow(unused)]
 pub struct NvmeQueuePair {
     pub id: u16,
-    sub_queue: NvmeSubQueue,
+    pub sub_queue: NvmeSubQueue,
     comp_queue: NvmeCompQueue,
 }
 
@@ -139,11 +139,11 @@ pub fn submit_io(io_q: &mut NvmeSubQueue, data: &impl DmaSlice, mut lba: u64, wr
     // (req, tail)
 }
 
-pub fn complete_io(c_q: &mut NvmeCompQueue) -> Option<u16> {
-    let (tail, c_entry, _) = c_q.complete_spin();
+pub fn complete_io(qpair: &mut NvmeQueuePair) -> Option<u16> {
+    let (tail, c_entry, _) = qpair.comp_queue.complete_spin();
     unsafe {
         std::ptr::write_volatile(
-            c_q.doorbell as *mut u32,
+            qpair.comp_queue.doorbell as *mut u32,
             tail as u32,
         );
     }
