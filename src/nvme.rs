@@ -98,69 +98,63 @@ pub struct NvmeQueuePair {
     comp_queue: NvmeCompQueue,
 }
 
-pub fn submit_io(io_q: &mut NvmeSubQueue, data: &impl DmaSlice, mut lba: u64, write: bool) { // -> (u32, usize) {
-    // let mut req = 0;
-    let mut tail ;
+impl NvmeQueuePair {
+    pub fn submit_io(&mut self, data: &impl DmaSlice, mut lba: u64, write: bool) { // -> (u32, usize) {
 
-    for chunk in data.chunks(2 * 4096) {
-        let blocks = (chunk.slice.len() as u64 + 512 - 1) / 512;
+        for chunk in data.chunks(2 * 4096) {
+            let blocks = (chunk.slice.len() as u64 + 512 - 1) / 512;
 
-        let addr = chunk.phys_addr as u64;
-        let bytes = blocks * 512;
-        let ptr1 = if bytes <= 4096 {
-            0
-        } else {
-            addr + 4096 // self.page_size
-        };
+            let addr = chunk.phys_addr as u64;
+            let bytes = blocks * 512;
+            let ptr1 = if bytes <= 4096 {
+                0
+            } else {
+                addr + 4096 // self.page_size
+            };
 
-        let entry = if write {
-            NvmeCommand::io_write(io_q.tail as u16, 1, lba, blocks as u16 - 1, addr, ptr1)
-        } else {
-            NvmeCommand::io_read(io_q.tail as u16, 1, lba, blocks as u16 - 1, addr, ptr1)
-        };
+            let entry = if write {
+                NvmeCommand::io_write(self.id << 11 | self.sub_queue.tail as u16, 1, lba, blocks as u16 - 1, addr, ptr1)
+            } else {
+                NvmeCommand::io_read(self.id << 11 | self.sub_queue.tail as u16, 1, lba, blocks as u16 - 1, addr, ptr1)
+            };
 
-        loop {
-            if let Some(t) = io_q.submit_checked(entry) {
-                tail = t;
-                break;
+            let tail = self.sub_queue.submit(entry);
+            unsafe {
+                std::ptr::write_volatile(
+                    self.sub_queue.doorbell as *mut u32,
+                    tail as u32,
+                );
             }
-            super::pause();
+
+            lba += blocks;
         }
+    }
+
+    pub fn complete_io(&mut self, n: usize) -> Option<u16> {
+        let (tail, c_entry, _) = self.comp_queue.complete_n(n);
         unsafe {
             std::ptr::write_volatile(
-                io_q.doorbell as *mut u32,
+                self.comp_queue.doorbell as *mut u32,
                 tail as u32,
             );
         }
 
-        lba += blocks;
-        // req += 1;
+        let status = c_entry.status >> 1;
+        if status != 0 {
+            eprintln!(
+                "Status: 0x{:x}, Status Code 0x{:x}, Status Code Type: 0x{:x}",
+                status,
+                status & 0xFF,
+                (status >> 8) & 0x7
+            );
+            eprintln!("{:?}", c_entry);
+            return None;
+        }
+        Some(c_entry.sq_head)
     }
-    // (req, tail)
+
 }
 
-pub fn complete_io(qpair: &mut NvmeQueuePair) -> Option<u16> {
-    let (tail, c_entry, _) = qpair.comp_queue.complete_spin();
-    unsafe {
-        std::ptr::write_volatile(
-            qpair.comp_queue.doorbell as *mut u32,
-            tail as u32,
-        );
-    }
-
-    let status = c_entry.status >> 1;
-    if status != 0 {
-        eprintln!(
-            "Status: 0x{:x}, Status Code 0x{:x}, Status Code Type: 0x{:x}",
-            status,
-            status & 0xFF,
-            (status >> 8) & 0x7
-        );
-        eprintln!("{:?}", c_entry);
-        return None;
-    }
-    Some(c_entry.sq_head)
-}
 
 #[allow(unused)]
 pub struct NvmeDevice {
@@ -345,8 +339,8 @@ impl NvmeDevice {
     // 1 to 1 Submission/Completion Queue Mapping
     // TODO: return qpair instead?
     pub fn create_io_queue_pair(&mut self, len: usize) -> Result<NvmeQueuePair, Box<dyn Error>> {
-        println!("Requesting i/o completion queue");
         let q_id = self.q_id;
+        println!("Requesting i/o queue pair with id {q_id}");
 
         let dbl = self.addr as usize + 0x1000 + ((4 << self.dstrd) * (2 * q_id + 1) as usize);
         let comp_queue = NvmeCompQueue::new(len, dbl)?;
@@ -358,8 +352,6 @@ impl NvmeDevice {
                 (len - 1) as u16,
             )
         })?;
-
-        println!("Requesting i/o submission queue");
 
         let dbl = self.addr as usize + 0x1000 + ((4 << self.dstrd) * (2 * q_id) as usize);
         let sub_queue = NvmeSubQueue::new(len, dbl)?;
