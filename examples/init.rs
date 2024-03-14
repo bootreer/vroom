@@ -1,9 +1,9 @@
-use std::{env, process, thread};
+use rand::{thread_rng, Rng};
 use std::error::Error;
 use std::sync::{Arc, Mutex};
+use std::{env, process, thread};
 use vroom::memory::*;
 use vroom::{NvmeDevice, QUEUE_LENGTH};
-use rand::{thread_rng, Rng};
 
 pub fn main() -> Result<(), Box<dyn Error>> {
     let mut args = env::args();
@@ -18,8 +18,9 @@ pub fn main() -> Result<(), Box<dyn Error>> {
     };
 
     let nvme = vroom::init(&pci_addr)?;
-    // nvme.create_io_queue_pair(QUEUE_LENGTH)?;
     let _ = qd32(nvme)?;
+
+    // nvme.create_io_queue_pair(QUEUE_LENGTH)?;
 
     /*
     // Testing stuff
@@ -36,7 +37,7 @@ pub fn main() -> Result<(), Box<dyn Error>> {
     let mut rng = thread_rng();
     let seq = &(0..n).map(|_| rng.gen_range(0..ns_blocks as u64)).collect::<Vec<u64>>()[..];
     for &lba in seq {
-        /* 
+        /*
         let lba = rng.gen_range(0..ns_blocks);
         let rand_block = &(0..bytes).map(|_| rand::random::<u8>()).collect::<Vec<_>>()[..];
 
@@ -49,6 +50,7 @@ pub fn main() -> Result<(), Box<dyn Error>> {
 
         buffer[..rand_block.len()].fill_with(Default::default);
         */
+
         let before = std::time::Instant::now();
         nvme.read(&buffer.slice(0..bytes as usize), lba)?;
         read += before.elapsed();
@@ -86,15 +88,18 @@ fn qd32(mut nvme: NvmeDevice) -> Result<NvmeDevice, Box<dyn Error>> {
 
         let handle = thread::spawn(move || -> std::time::Duration {
             let mut rng = rand::thread_rng();
-            let seq = &(0..1_000_000).map(|_| rng.gen_range(0..*max_lba)).collect::<Vec<u64>>()[..];
+            let seq = &(0..1_000_000)
+                .map(|_| rng.gen_range(0..*max_lba))
+                .collect::<Vec<u64>>()[..];
 
             let blocks = 8;
             let bytes = 512 * blocks;
 
-            let mut total= std::time::Duration::ZERO;
+            let mut total = std::time::Duration::ZERO;
             let mut buffer: Dma<u8> = Dma::allocate(HUGE_PAGE_SIZE, true).unwrap();
 
-            let mut qpair = nvme.lock().unwrap().create_io_queue_pair(32).unwrap();
+            // buggy when completely saturating queue for some reason
+            let mut qpair = nvme.lock().unwrap().create_io_queue_pair(128).unwrap();
 
             // TODO
             for lba in seq.chunks(32) {
@@ -102,19 +107,24 @@ fn qd32(mut nvme: NvmeDevice) -> Result<NvmeDevice, Box<dyn Error>> {
                 // buffer[..rand_block.len()].copy_from_slice(rand_block);
 
                 let before = std::time::Instant::now();
-                for (idx, &lba) in lba.iter().enumerate() { 
-                    qpair.submit_io(&buffer.slice((idx * bytes)..(idx + 1) * bytes as usize), lba, false);
+                for (idx, &lba) in lba.iter().enumerate() {
+                    qpair.submit_io(
+                        &buffer.slice((idx * bytes)..(idx + 1) * bytes as usize),
+                        lba,
+                        false,
+                    );
                 }
-                while !qpair.sub_queue.is_empty() {
+
+                // while !qpair.sub_queue.is_empty() {
+                for _ in 0..lba.len() {
                     if let Some(head) = qpair.complete_io(1) {
                         qpair.sub_queue.head = head as usize;
                     } else {
-                        eprintln!("shit"); 
+                        eprintln!("shit");
                         continue;
                     }
                 }
                 total += before.elapsed();
-
             }
             assert!(qpair.sub_queue.is_empty());
 
@@ -134,14 +144,10 @@ fn qd32(mut nvme: NvmeDevice) -> Result<NvmeDevice, Box<dyn Error>> {
 
     // lol
     match Arc::try_unwrap(nvme) {
-        Ok(mutex) => {
-            match mutex.into_inner() {
-                Ok(t) => Ok(t),
-                Err(e) => Err(e.into()),
-            }
-        }
-        Err(arc_mutex_t_again) => {
-            Err("Arc::try_unwrap failed, not the last reference.".into())
-        }
+        Ok(mutex) => match mutex.into_inner() {
+            Ok(t) => Ok(t),
+            Err(e) => Err(e.into()),
+        },
+        Err(arc_mutex_t_again) => Err("Arc::try_unwrap failed, not the last reference.".into()),
     }
 }
