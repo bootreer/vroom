@@ -10,12 +10,13 @@ mod pci;
 #[allow(dead_code)]
 mod queues;
 
-pub use queues::QUEUE_LENGTH;
 pub use memory::HUGE_PAGE_SIZE;
 pub use nvme::{NvmeDevice, NvmeQueuePair};
 use pci::*;
+pub use queues::QUEUE_LENGTH;
 use std::error::Error;
 
+// TODO: remove in place of std::hint::spin_loop
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 pub(crate) fn pause() {

@@ -1,10 +1,11 @@
 use crate::cmd::NvmeCommand;
 use crate::memory::{Dma, DmaSlice};
-use crate::{HUGE_PAGE_SIZE, NvmeNamespace, NvmeStats};
 use crate::pci::pci_map_resource;
 use crate::queues::*;
+use crate::{NvmeNamespace, NvmeStats, HUGE_PAGE_SIZE};
 use std::collections::HashMap;
 use std::error::Error;
+use std::hint::spin_loop;
 
 // clippy doesnt like this
 #[allow(unused, clippy::upper_case_acronyms)]
@@ -99,8 +100,10 @@ pub struct NvmeQueuePair {
 }
 
 impl NvmeQueuePair {
-    pub fn submit_io(&mut self, data: &impl DmaSlice, mut lba: u64, write: bool) { // -> (u32, usize) {
-
+    /// returns amount of requests pushed into submission queue
+    pub fn submit_io(&mut self, data: &impl DmaSlice, mut lba: u64, write: bool) -> usize {
+        let mut reqs = 0;
+        // TODO: contruct PRP list?
         for chunk in data.chunks(2 * 4096) {
             let blocks = (chunk.slice.len() as u64 + 512 - 1) / 512;
 
@@ -113,33 +116,49 @@ impl NvmeQueuePair {
             };
 
             let entry = if write {
-                NvmeCommand::io_write(self.id << 11 | self.sub_queue.tail as u16, 1, lba, blocks as u16 - 1, addr, ptr1)
+                NvmeCommand::io_write(
+                    self.id << 11 | self.sub_queue.tail as u16,
+                    1,
+                    lba,
+                    blocks as u16 - 1,
+                    addr,
+                    ptr1,
+                )
             } else {
-                NvmeCommand::io_read(self.id << 11 | self.sub_queue.tail as u16, 1, lba, blocks as u16 - 1, addr, ptr1)
+                NvmeCommand::io_read(
+                    self.id << 11 | self.sub_queue.tail as u16,
+                    1,
+                    lba,
+                    blocks as u16 - 1,
+                    addr,
+                    ptr1,
+                )
             };
 
-            let tail = self.sub_queue.submit(entry);
-            unsafe {
-                std::ptr::write_volatile(
-                    self.sub_queue.doorbell as *mut u32,
-                    tail as u32,
-                );
+            if let Some(tail) = self.sub_queue.submit_checked(entry) {
+                unsafe {
+                    std::ptr::write_volatile(self.sub_queue.doorbell as *mut u32, tail as u32);
+                }
+            } else {
+                eprintln!("queue full");
+                return reqs;
             }
 
             lba += blocks;
+            reqs += 1;
         }
+        reqs
     }
 
+    // TODO: maybe return result
     pub fn complete_io(&mut self, n: usize) -> Option<u16> {
         let (tail, c_entry, _) = self.comp_queue.complete_n(n);
         unsafe {
-            std::ptr::write_volatile(
-                self.comp_queue.doorbell as *mut u32,
-                tail as u32,
-            );
+            std::ptr::write_volatile(self.comp_queue.doorbell as *mut u32, tail as u32);
         }
 
         let status = c_entry.status >> 1;
+        self.sub_queue.head = c_entry.sq_head as usize;
         if status != 0 {
             eprintln!(
                 "Status: 0x{:x}, Status Code 0x{:x}, Status Code Type: 0x{:x}",
@@ -153,8 +172,27 @@ impl NvmeQueuePair {
         Some(c_entry.sq_head)
     }
 
+    pub fn quick_poll(&mut self) -> Option<()> {
+        if let Some((tail, c_entry, _)) = self.comp_queue.complete() {
+            unsafe {
+                std::ptr::write_volatile(self.comp_queue.doorbell as *mut u32, tail as u32);
+            }
+            let status = c_entry.status >> 1;
+            if status != 0 {
+                eprintln!(
+                    "Status: 0x{:x}, Status Code 0x{:x}, Status Code Type: 0x{:x}",
+                    status,
+                    status & 0xFF,
+                    (status >> 8) & 0x7
+                );
+                eprintln!("{:?}", c_entry);
+            }
+            self.sub_queue.head = c_entry.sq_head as usize;
+            return Some(());
+        }
+        None
+    }
 }
-
 
 #[allow(unused)]
 pub struct NvmeDevice {
@@ -168,7 +206,7 @@ pub struct NvmeDevice {
     // maybe map?
     pub io_sq: NvmeSubQueue,
     pub io_cq: NvmeCompQueue,
-    buffer: Dma<u8>, // 2MiB of buffer
+    buffer: Dma<u8>,           // 2MiB of buffer
     prp_list: Dma<[u64; 512]>, // Address of PRP's, devices doesn't necessarily support 2MiB page sizes; 8 Bytes * 512 = 4096
     pub namespaces: HashMap<u32, NvmeNamespace>,
     pub stats: NvmeStats,
@@ -203,7 +241,7 @@ impl NvmeDevice {
             prp_list: Dma::allocate(8 * 512, true)?,
             namespaces: HashMap::new(),
             stats: NvmeStats::default(),
-            q_id: 1
+            q_id: 1,
         };
 
         for i in 1..512 {
@@ -223,9 +261,7 @@ impl NvmeDevice {
         loop {
             let csts = dev.get_reg32(NvmeRegs32::CSTS as u32);
             if csts & 1 == 1 {
-                unsafe {
-                    super::pause();
-                }
+                spin_loop();
             } else {
                 break;
             }
@@ -262,7 +298,7 @@ impl NvmeDevice {
         loop {
             let csts = dev.get_reg32(NvmeRegs32::CSTS as u32);
             if csts & 1 == 0 {
-                super::pause();
+                spin_loop();
             } else {
                 break;
             }
@@ -272,12 +308,7 @@ impl NvmeDevice {
         let addr = dev.io_cq.get_addr();
         println!("Requesting i/o completion queue");
         let comp = dev.submit_and_complete_admin(|c_id, _| {
-            NvmeCommand::create_io_completion_queue(
-                c_id,
-                q_id,
-                addr,
-                (QUEUE_LENGTH - 1) as u16,
-            )
+            NvmeCommand::create_io_completion_queue(c_id, q_id, addr, (QUEUE_LENGTH - 1) as u16)
         })?;
         let addr = dev.io_sq.get_addr();
         println!("Requesting i/o submission queue");
@@ -435,11 +466,7 @@ impl NvmeDevice {
         Ok(())
     }
 
-    pub fn read(
-        &mut self,
-        dest: &impl DmaSlice,
-        mut lba: u64,
-    ) -> Result<(), Box<dyn Error>> {
+    pub fn read(&mut self, dest: &impl DmaSlice, mut lba: u64) -> Result<(), Box<dyn Error>> {
         let ns = *self.namespaces.get(&1).unwrap();
 
         for chunk in dest.chunks(2 * 4096) {
@@ -507,9 +534,23 @@ impl NvmeDevice {
         };
 
         let entry = if write {
-            NvmeCommand::io_write(self.io_sq.tail as u16, ns.id, lba, blocks as u16 - 1, addr, ptr1)
+            NvmeCommand::io_write(
+                self.io_sq.tail as u16,
+                ns.id,
+                lba,
+                blocks as u16 - 1,
+                addr,
+                ptr1,
+            )
         } else {
-            NvmeCommand::io_read(self.io_sq.tail as u16, ns.id, lba, blocks as u16 - 1, addr, ptr1)
+            NvmeCommand::io_read(
+                self.io_sq.tail as u16,
+                ns.id,
+                lba,
+                blocks as u16 - 1,
+                addr,
+                ptr1,
+            )
         };
         self.io_sq.submit_checked(entry)
     }
@@ -666,7 +707,6 @@ impl NvmeDevice {
         self.io_sq.head = self.complete_io(1).unwrap() as usize;
         Ok(())
     }
-
 
     pub fn submit_and_complete_admin<F: FnOnce(u16, usize) -> NvmeCommand>(
         &mut self,

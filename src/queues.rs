@@ -1,6 +1,7 @@
 use crate::cmd::NvmeCommand;
 use crate::memory::*;
 use std::error::Error;
+use std::hint::spin_loop;
 
 /// NVMe spec 4.6
 /// Completion queue entry
@@ -42,7 +43,7 @@ impl NvmeSubQueue {
             head: 0,
             tail: 0,
             len: len.min(QUEUE_LENGTH),
-            doorbell
+            doorbell,
         })
     }
 
@@ -93,7 +94,7 @@ impl NvmeCompQueue {
             head: 0,
             phase: true,
             len: len.min(QUEUE_LENGTH),
-            doorbell
+            doorbell,
         })
     }
 
@@ -130,7 +131,7 @@ impl NvmeCompQueue {
             if let Some(val) = self.complete() {
                 return val;
             }
-            super::pause();
+            spin_loop();
         }
     }
 

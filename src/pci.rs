@@ -30,7 +30,7 @@ pub fn unbind_driver(pci_addr: &str) -> Result<(), Box<dyn Error>> {
 /// Enables direct memory access for the device at `pci_addr`.
 pub fn enable_dma(pci_addr: &str) -> Result<(), Box<dyn Error>> {
     let path = format!("/sys/bus/pci/devices/{}/config", pci_addr);
-    let mut file = fs::OpenOptions::new().read(true).write(true).open(&path)?;
+    let mut file = fs::OpenOptions::new().read(true).write(true).open(path)?;
 
     let mut dma = read_io16(&mut file, COMMAND_REGISTER_OFFSET)?;
     dma |= 1 << BUS_MASTER_ENABLE_BIT;
@@ -42,7 +42,7 @@ pub fn enable_dma(pci_addr: &str) -> Result<(), Box<dyn Error>> {
 /// Disable INTx interrupts for the device at `pci_addr`.
 pub fn disable_interrupts(pci_addr: &str) -> Result<(), Box<dyn Error>> {
     let path = format!("/sys/bus/pci/devices/{}/config", pci_addr);
-    let mut file = fs::OpenOptions::new().read(true).write(true).open(&path)?;
+    let mut file = fs::OpenOptions::new().read(true).write(true).open(path)?;
 
     let mut dma = read_io16(&mut file, COMMAND_REGISTER_OFFSET)?;
     dma |= 1 << INTERRUPT_DISABLE;
@@ -146,7 +146,7 @@ pub fn read_hex(file: &mut File) -> Result<u64, Box<dyn Error>> {
     file.read_to_string(&mut buffer)?;
 
     Ok(u64::from_str_radix(
-        &buffer.trim().trim_start_matches("0x"),
+        buffer.trim().trim_start_matches("0x"),
         16,
     )?)
 }
