@@ -174,4 +174,46 @@ impl NvmeCommand {
             cdw15: 0,
         }
     }
+
+    pub(crate) fn format_nvm(c_id: u16, ns_id: u32) -> Self {
+        Self {
+            opcode: 0x80,
+            flags: 0,
+            c_id,
+            ns_id,
+            _rsvd: 0,
+            md_ptr: 0,
+            d_ptr: [0, 0],
+            cdw10: 1 << 9,
+            // TODO: dealloc and prinfo bits
+            cdw11: 0,
+            cdw12: 0,
+            cdw13: 0,
+            cdw14: 0,
+            cdw15: 0,
+
+        }
+
+    }
+
+    // not supported by samsung
+    pub fn write_zeroes(c_id: u16, ns_id: u32, slba: u64, nlb: u16, deac: bool) -> Self {
+        Self {
+            opcode: 8,
+            flags: 0,
+            c_id,
+            ns_id,
+            _rsvd: 0,
+            md_ptr: 0,
+            d_ptr: [0, 0],
+            cdw10: slba as u32,
+            // TODO: dealloc and prinfo bits
+            cdw11: (slba >> 32) as u32,
+            cdw12: ((deac as u32) << 25) | nlb as u32,
+            cdw13: 0,
+            cdw14: 0,
+            cdw15: 0,
+        }
+
+    }
 }

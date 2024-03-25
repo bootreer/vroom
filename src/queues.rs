@@ -98,8 +98,9 @@ impl NvmeCompQueue {
         })
     }
 
+    #[inline(always)]
     pub fn complete(&mut self) -> Option<(usize, NvmeCompletion, usize)> {
-        let entry: NvmeCompletion = self.commands[self.head];
+        let entry = &self.commands[self.head];
 
         if ((entry.status & 1) == 1) == self.phase {
             let prev = self.head;
@@ -107,7 +108,7 @@ impl NvmeCompQueue {
             if self.head == 0 {
                 self.phase = !self.phase;
             }
-            Some((self.head, entry, prev))
+            Some((self.head, entry.clone(), prev))
         } else {
             None
         }

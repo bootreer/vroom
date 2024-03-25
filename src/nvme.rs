@@ -156,9 +156,8 @@ impl NvmeQueuePair {
         unsafe {
             std::ptr::write_volatile(self.comp_queue.doorbell as *mut u32, tail as u32);
         }
-
-        let status = c_entry.status >> 1;
         self.sub_queue.head = c_entry.sq_head as usize;
+        let status = c_entry.status >> 1;
         if status != 0 {
             eprintln!(
                 "Status: 0x{:x}, Status Code 0x{:x}, Status Code Type: 0x{:x}",
@@ -177,6 +176,7 @@ impl NvmeQueuePair {
             unsafe {
                 std::ptr::write_volatile(self.comp_queue.doorbell as *mut u32, tail as u32);
             }
+            self.sub_queue.head = c_entry.sq_head as usize;
             let status = c_entry.status >> 1;
             if status != 0 {
                 eprintln!(
@@ -187,7 +187,6 @@ impl NvmeQueuePair {
                 );
                 eprintln!("{:?}", c_entry);
             }
-            self.sub_queue.head = c_entry.sq_head as usize;
             return Some(());
         }
         None
@@ -729,6 +728,19 @@ impl NvmeDevice {
             return Err("Requesting i/o completion queue failed".into());
         }
         Ok(entry)
+    }
+
+    pub fn clear_namespace(
+        &mut self,
+        ns_id: Option<u32>
+    ) {
+        let ns_id = if let Some(ns_id) = ns_id {
+            assert!(self.namespaces.contains_key(&ns_id));
+            ns_id
+        } else {
+            0xFFFF_FFFF
+        };
+        self.submit_and_complete_admin(| c_id, _ | { NvmeCommand::format_nvm(c_id, ns_id) } );
     }
 
     /// Sets Queue `qid` Tail Doorbell to `val`
