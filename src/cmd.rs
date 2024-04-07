@@ -75,6 +75,24 @@ impl NvmeCommand {
         }
     }
 
+    pub fn delete_io_submission_queue(c_id: u16, q_id: u16) -> Self {
+        Self {
+            opcode: 0,
+            c_id,
+            cdw10: q_id as u32,
+            ..Default::default()
+        }
+    }
+
+    pub fn delete_io_completion_queue(c_id: u16, q_id: u16) -> Self {
+        Self {
+            opcode: 4,
+            c_id,
+            cdw10: q_id as u32,
+            ..Default::default()
+        }
+    }
+
     pub fn identify_namespace(c_id: u16, ptr: usize, ns_id: u32) -> Self {
         Self {
             opcode: 6,
@@ -129,7 +147,6 @@ impl NvmeCommand {
         }
     }
 
-    #[allow(unused_variables)]
     pub fn get_features(c_id: u16, ptr: usize, fid: u8) -> Self {
         Self {
             opcode: 0xA,
@@ -151,7 +168,7 @@ impl NvmeCommand {
             cdw10: lba as u32,
             cdw11: (lba >> 32) as u32,
             cdw12: blocks_1 as u32,
-            cdw13: 0, // TODO?
+            cdw13: 0,
             cdw14: 0,
             cdw15: 0,
         }
@@ -194,6 +211,34 @@ impl NvmeCommand {
 
         }
 
+    }
+
+    pub(crate) fn async_event_req(c_id: u16) -> Self {
+        Self {
+            opcode: 0xC,
+            flags: 0,
+            c_id,
+            ns_id: 0,
+            _rsvd: 0,
+            md_ptr: 0,
+            d_ptr: [0, 0],
+            cdw10: 0,
+            cdw11: 0,
+            cdw12: 0,
+            cdw13: 0,
+            cdw14: 0,
+            cdw15: 0
+        }
+    }
+
+    pub(crate) fn get_log_page(c_id: u16, numd: u32, ptr0: u64, ptr1: u64, lid: u8, lpid: u16) -> Self {
+        Self {
+            c_id,
+            d_ptr: [ptr0, ptr1],
+            cdw10: (numd << 16) | lid as u32,
+            cdw11: ((lpid as u32) << 16) | numd >> 16,
+            ..Self::default()
+        }
     }
 
     // not supported by samsung

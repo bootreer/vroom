@@ -115,6 +115,7 @@ impl NvmeCompQueue {
     }
 
     ///
+    #[inline(always)]
     pub fn complete_n(&mut self, commands: usize) -> (usize, NvmeCompletion, usize) {
         let prev = self.head;
         self.head += commands - 1;
@@ -127,6 +128,7 @@ impl NvmeCompQueue {
         (head, entry, prev)
     }
 
+    #[inline(always)]
     pub fn complete_spin(&mut self) -> (usize, NvmeCompletion, usize) {
         loop {
             if let Some(val) = self.complete() {

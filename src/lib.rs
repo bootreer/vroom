@@ -16,31 +16,6 @@ use pci::*;
 pub use queues::QUEUE_LENGTH;
 use std::error::Error;
 
-// TODO: remove in place of std::hint::spin_loop
-#[cfg(target_arch = "aarch64")]
-#[inline(always)]
-pub(crate) fn pause() {
-    unsafe {
-        std::arch::aarch64::__yield();
-    }
-}
-
-#[cfg(target_arch = "x86")]
-#[inline(always)]
-pub(crate) fn pause() {
-    unsafe {
-        std::arch::x86::_mm_pause();
-    }
-}
-
-#[cfg(target_arch = "x86_64")]
-#[inline(always)]
-pub(crate) fn pause() {
-    unsafe {
-        std::arch::x86_64::_mm_pause();
-    }
-}
-
 pub fn init(pci_addr: &str) -> Result<NvmeDevice, Box<dyn Error>> {
     let mut vendor_file = pci_open_resource_ro(pci_addr, "vendor").expect("wrong pci address");
     let mut device_file = pci_open_resource_ro(pci_addr, "device").expect("wrong pci address");

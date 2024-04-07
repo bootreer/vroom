@@ -367,7 +367,6 @@ impl NvmeDevice {
     }
 
     // 1 to 1 Submission/Completion Queue Mapping
-    // TODO: return qpair instead?
     pub fn create_io_queue_pair(&mut self, len: usize) -> Result<NvmeQueuePair, Box<dyn Error>> {
         let q_id = self.q_id;
         println!("Requesting i/o queue pair with id {q_id}");
@@ -401,6 +400,23 @@ impl NvmeDevice {
             sub_queue,
             comp_queue,
         })
+    }
+
+    pub fn delete_io_queue_pair(&mut self, qpair: NvmeQueuePair) -> Result<(), Box<dyn Error>> {
+        println!("Deleting i/o queue pair with id {}", qpair.id);
+        self.submit_and_complete_admin(|c_id, _| {
+            NvmeCommand::delete_io_submission_queue(
+                c_id,
+                qpair.id,
+            )
+        })?;
+        self.submit_and_complete_admin(|c_id, _| {
+            NvmeCommand::delete_io_completion_queue(
+                c_id,
+                qpair.id,
+            )
+        })?;
+        Ok(())
     }
 
     pub fn identify_namespace_list(&mut self, base: u32) -> Vec<u32> {
@@ -452,13 +468,10 @@ impl NvmeDevice {
         namespace
     }
 
-    // pass prp list?
     pub fn write(&mut self, data: &impl DmaSlice, mut lba: u64) -> Result<(), Box<dyn Error>> {
-        let ns = *self.namespaces.get(&1).unwrap();
-
         for chunk in data.chunks(2 * 4096) {
-            let blocks = (chunk.slice.len() as u64 + ns.block_size - 1) / ns.block_size;
-            self.namespace_io(&ns, blocks, lba, chunk.phys_addr as u64, true)?;
+            let blocks = (chunk.slice.len() as u64 + 512 - 1) / 512;
+            self.namespace_io(1, blocks, lba, chunk.phys_addr as u64, true)?;
             lba += blocks;
         }
 
@@ -466,11 +479,10 @@ impl NvmeDevice {
     }
 
     pub fn read(&mut self, dest: &impl DmaSlice, mut lba: u64) -> Result<(), Box<dyn Error>> {
-        let ns = *self.namespaces.get(&1).unwrap();
-
+        // let ns = *self.namespaces.get(&1).unwrap();
         for chunk in dest.chunks(2 * 4096) {
-            let blocks = (chunk.slice.len() as u64 + ns.block_size - 1) / ns.block_size;
-            self.namespace_io(&ns, blocks, lba, chunk.phys_addr as u64, false)?;
+            let blocks = (chunk.slice.len() as u64 + 512 - 1) / 512;
+            self.namespace_io(1, blocks, lba, chunk.phys_addr as u64, false)?;
             lba += blocks;
         }
         Ok(())
@@ -478,12 +490,10 @@ impl NvmeDevice {
 
     pub fn write_copied(&mut self, data: &[u8], mut lba: u64) -> Result<(), Box<dyn Error>> {
         let ns = *self.namespaces.get(&1).unwrap();
-
-        // for chunk in data.chunks(128 * 4096) {
-        for chunk in data.chunks(2 * 4096) {
+        for chunk in data.chunks(128 * 4096) {
             self.buffer[..chunk.len()].copy_from_slice(chunk);
             let blocks = (chunk.len() as u64 + ns.block_size - 1) / ns.block_size;
-            self.namespace_io(&ns, blocks, lba, self.buffer.phys as u64, true)?;
+            self.namespace_io(1, blocks, lba, self.buffer.phys as u64, true)?;
             lba += blocks;
         }
 
@@ -497,19 +507,16 @@ impl NvmeDevice {
         mut lba: u64,
     ) -> Result<(), Box<dyn Error>> {
         let ns = *self.namespaces.get(&ns_id).unwrap();
-
-        // for chunk in dest.chunks_mut(128 * 4096) {
-        for chunk in dest.chunks_mut(2 * 4096) {
+        for chunk in dest.chunks_mut(128 * 4096) {
             let blocks = (chunk.len() as u64 + ns.block_size - 1) / ns.block_size;
-            self.namespace_io(&ns, blocks, lba, self.buffer.phys as u64, false)?;
-
+            self.namespace_io(1, blocks, lba, self.buffer.phys as u64, false)?;
             lba += blocks;
             chunk.copy_from_slice(&self.buffer[..chunk.len()]);
         }
         Ok(())
     }
 
-    pub fn submit_io(
+    fn submit_io(
         &mut self,
         ns: &NvmeNamespace,
         addr: u64,
@@ -527,8 +534,8 @@ impl NvmeDevice {
         } else if bytes <= 8192 {
             addr + 4096 // self.page_size
         } else {
-            // TODOo: idk if correct
-            let offset = (addr - self.prp_list.phys as u64) / 8;
+            // idk if this works
+            let offset = (addr - self.buffer.phys as u64) / 8;
             self.prp_list.phys as u64 + offset
         };
 
@@ -554,7 +561,7 @@ impl NvmeDevice {
         self.io_sq.submit_checked(entry)
     }
 
-    pub fn complete_io(&mut self, step: u64) -> Option<u16> {
+    fn complete_io(&mut self, step: u64) -> Option<u16> {
         let q_id = 1;
 
         let (tail, c_entry, _) = self.io_cq.complete_n(step as usize);
@@ -654,9 +661,10 @@ impl NvmeDevice {
         Ok(())
     }
 
-    pub fn namespace_io(
+    #[inline(always)]
+    fn namespace_io(
         &mut self,
-        ns: &NvmeNamespace,
+        ns_id: u32,
         blocks: u64,
         lba: u64,
         addr: u64,
@@ -667,22 +675,20 @@ impl NvmeDevice {
 
         let q_id = 1;
 
-        let bytes = blocks * ns.block_size;
+        let bytes = blocks * 512;
         let ptr1 = if bytes <= 4096 {
             0
         } else if bytes <= 8192 {
             // self.buffer.phys as u64 + 4096 // self.page_size
             addr + 4096 // self.page_size
         } else {
-            // self.prp_list.phys as u64
-            eprintln!("tough luck");
-            addr + 4096
+            self.prp_list.phys as u64
         };
 
         let entry = if write {
             NvmeCommand::io_write(
                 self.io_sq.tail as u16,
-                ns.id,
+                ns_id,
                 lba,
                 blocks as u16 - 1,
                 addr,
@@ -691,7 +697,7 @@ impl NvmeDevice {
         } else {
             NvmeCommand::io_read(
                 self.io_sq.tail as u16,
-                ns.id,
+                ns_id,
                 lba,
                 blocks as u16 - 1,
                 addr,
@@ -707,7 +713,7 @@ impl NvmeDevice {
         Ok(())
     }
 
-    pub fn submit_and_complete_admin<F: FnOnce(u16, usize) -> NvmeCommand>(
+    fn submit_and_complete_admin<F: FnOnce(u16, usize) -> NvmeCommand>(
         &mut self,
         cmd_init: F,
     ) -> Result<NvmeCompletion, Box<dyn Error>> {
