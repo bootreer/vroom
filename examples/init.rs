@@ -29,7 +29,7 @@ pub fn main() -> Result<(), Box<dyn Error>> {
     let bytes = 512 * blocks;
     let ns_blocks = nvme.namespaces.get(&1).unwrap().blocks - blocks - 1;
 
-    let mut buffer: Dma<u8> = Dma::allocate(HUGE_PAGE_SIZE, true)?;
+    let mut buffer: Dma<u8> = Dma::allocate(HUGE_PAGE_SIZE)?;
 
     let n = 1_000_000;
     let mut read = std::time::Duration::new(0, 0);
@@ -104,7 +104,7 @@ fn qd32(mut nvme: NvmeDevice) -> Result<NvmeDevice, Box<dyn Error>> {
 
             let mut read = std::time::Duration::ZERO;
             let mut write = std::time::Duration::ZERO;
-            let mut buffer: Dma<u8> = Dma::allocate(HUGE_PAGE_SIZE, true).unwrap();
+            let mut buffer: Dma<u8> = Dma::allocate(HUGE_PAGE_SIZE).unwrap();
 
             // buggy when completely saturating queue for some reason
             let mut qpair = nvme
@@ -203,7 +203,7 @@ fn qd32_test(mut nvme: NvmeDevice, write: bool) -> Result<NvmeDevice, Box<dyn Er
             let bytes = 512 * blocks;
 
             let mut elapsed = std::time::Duration::ZERO;
-            let mut buffer: Dma<u8> = Dma::allocate(HUGE_PAGE_SIZE, true).unwrap();
+            let mut buffer: Dma<u8> = Dma::allocate(HUGE_PAGE_SIZE).unwrap();
 
             // buggy when completely saturating queue for some reason
             let mut qpair = nvme

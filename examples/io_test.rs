@@ -43,7 +43,7 @@ fn qd1(
     random: bool,
     time: Option<Duration>,
 ) -> Result<NvmeDevice, Box<dyn Error>> {
-    let mut buffer: Dma<u8> = Dma::allocate(HUGE_PAGE_SIZE, true)?;
+    let mut buffer: Dma<u8> = Dma::allocate(HUGE_PAGE_SIZE)?;
 
     let blocks = 8;
     let bytes = 512 * blocks;
@@ -126,7 +126,7 @@ fn qd_n(
             let mut rng = rand::thread_rng();
             let bytes = 512 * blocks as usize;
             let mut total = std::time::Duration::ZERO;
-            let mut buffer: Dma<u8> = Dma::allocate(HUGE_PAGE_SIZE, true).unwrap();
+            let mut buffer: Dma<u8> = Dma::allocate(HUGE_PAGE_SIZE).unwrap();
 
             let mut qpair = nvme
                 .lock()
@@ -236,7 +236,7 @@ fn qd_n(
 }
 
 fn fill_ns(nvme: &mut NvmeDevice) {
-    let buffer: Dma<u8> = Dma::allocate(HUGE_PAGE_SIZE, true).unwrap();
+    let buffer: Dma<u8> = Dma::allocate(HUGE_PAGE_SIZE).unwrap();
     let max_lba = nvme.namespaces.get(&1).unwrap().blocks - buffer.size as u64 / 512 - 1;
     let blocks = buffer.size as u64 / 512;
     let mut lba = 0;
