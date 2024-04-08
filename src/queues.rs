@@ -39,7 +39,7 @@ pub struct NvmeSubQueue {
 impl NvmeSubQueue {
     pub fn new(len: usize, doorbell: usize) -> Result<Self, Box<dyn Error>> {
         Ok(Self {
-            commands: Dma::allocate(crate::memory::HUGE_PAGE_SIZE, false)?,
+            commands: Dma::allocate(crate::memory::HUGE_PAGE_SIZE)?,
             head: 0,
             tail: 0,
             len: len.min(QUEUE_LENGTH),
@@ -90,7 +90,7 @@ pub struct NvmeCompQueue {
 impl NvmeCompQueue {
     pub fn new(len: usize, doorbell: usize) -> Result<Self, Box<dyn Error>> {
         Ok(Self {
-            commands: Dma::allocate(crate::memory::HUGE_PAGE_SIZE, false)?,
+            commands: Dma::allocate(crate::memory::HUGE_PAGE_SIZE)?,
             head: 0,
             phase: true,
             len: len.min(QUEUE_LENGTH),

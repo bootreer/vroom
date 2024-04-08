@@ -173,16 +173,12 @@ impl IndexMut<RangeFull> for Dma<u8> {
 impl<T> Dma<T> {
     /// Allocates DMA Memory on a huge page
     // TODO: vfio support?
-    pub fn allocate(size: usize, require_contiguous: bool) -> Result<Dma<T>, Box<dyn Error>> {
+    pub fn allocate(size: usize) -> Result<Dma<T>, Box<dyn Error>> {
         let size = if size % HUGE_PAGE_SIZE != 0 {
             ((size >> HUGE_PAGE_BITS) + 1) << HUGE_PAGE_BITS
         } else {
             size
         };
-
-        if require_contiguous && size > HUGE_PAGE_SIZE {
-            return Err("failed to map physically contiguous memory".into());
-        }
 
         let id = HUGEPAGE_ID.fetch_add(1, Ordering::SeqCst);
         let path = format!("/mnt/huge/nvme-{}-{}", process::id(), id);
