@@ -92,7 +92,6 @@ struct IdentifyNamespaceData {
     vendor_specific: [u8; 3712],
 }
 
-#[allow(unused)]
 pub struct NvmeQueuePair {
     pub id: u16,
     pub sub_queue: NvmeSubQueue,
@@ -152,6 +151,7 @@ impl NvmeQueuePair {
 
     // TODO: maybe return result
     pub fn complete_io(&mut self, n: usize) -> Option<u16> {
+        assert!(n > 0);
         let (tail, c_entry, _) = self.comp_queue.complete_n(n);
         unsafe {
             std::ptr::write_volatile(self.comp_queue.doorbell as *mut u32, tail as u32);
@@ -202,9 +202,8 @@ pub struct NvmeDevice {
     dstrd: u16,
     admin_sq: NvmeSubQueue,
     admin_cq: NvmeCompQueue,
-    // maybe map?
-    pub io_sq: NvmeSubQueue,
-    pub io_cq: NvmeCompQueue,
+    io_sq: NvmeSubQueue,
+    io_cq: NvmeCompQueue,
     buffer: Dma<u8>,           // 2MiB of buffer
     prp_list: Dma<[u64; 512]>, // Address of PRP's, devices doesn't necessarily support 2MiB page sizes; 8 Bytes * 512 = 4096
     pub namespaces: HashMap<u32, NvmeNamespace>,
@@ -371,7 +370,11 @@ impl NvmeDevice {
         let q_id = self.q_id;
         println!("Requesting i/o queue pair with id {q_id}");
 
-        let dbl = self.addr as usize + 0x1000 + ((4 << self.dstrd) * (2 * q_id + 1) as usize);
+        let offset = 0x1000 + ((4 << self.dstrd) * (2 * q_id + 1) as usize);
+        assert!(offset <= self.len - 4, "SQ doorbell offset out of bounds");
+
+        let dbl = self.addr as usize + offset;
+
         let comp_queue = NvmeCompQueue::new(len, dbl)?;
         let comp = self.submit_and_complete_admin(|c_id, _| {
             NvmeCommand::create_io_completion_queue(
@@ -405,16 +408,10 @@ impl NvmeDevice {
     pub fn delete_io_queue_pair(&mut self, qpair: NvmeQueuePair) -> Result<(), Box<dyn Error>> {
         println!("Deleting i/o queue pair with id {}", qpair.id);
         self.submit_and_complete_admin(|c_id, _| {
-            NvmeCommand::delete_io_submission_queue(
-                c_id,
-                qpair.id,
-            )
+            NvmeCommand::delete_io_submission_queue(c_id, qpair.id)
         })?;
         self.submit_and_complete_admin(|c_id, _| {
-            NvmeCommand::delete_io_completion_queue(
-                c_id,
-                qpair.id,
-            )
+            NvmeCommand::delete_io_completion_queue(c_id, qpair.id)
         })?;
         Ok(())
     }
@@ -736,17 +733,14 @@ impl NvmeDevice {
         Ok(entry)
     }
 
-    pub fn clear_namespace(
-        &mut self,
-        ns_id: Option<u32>
-    ) {
+    pub fn clear_namespace(&mut self, ns_id: Option<u32>) {
         let ns_id = if let Some(ns_id) = ns_id {
             assert!(self.namespaces.contains_key(&ns_id));
             ns_id
         } else {
             0xFFFF_FFFF
         };
-        self.submit_and_complete_admin(| c_id, _ | { NvmeCommand::format_nvm(c_id, ns_id) } );
+        self.submit_and_complete_admin(|c_id, _| NvmeCommand::format_nvm(c_id, ns_id));
     }
 
     /// Sets Queue `qid` Tail Doorbell to `val`
