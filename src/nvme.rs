@@ -423,7 +423,6 @@ impl NvmeDevice {
 
         // TODO: idk bout this/don't hardcode len
         let data: &[u32] =
-            // unsafe { std::slice::from_raw_parts(self.buffer.virt.as_ptr() as *const u32, 1024) };
             unsafe { std::slice::from_raw_parts(self.buffer.virt as *const u32, 1024) };
 
         data.iter()
@@ -465,6 +464,7 @@ impl NvmeDevice {
         namespace
     }
 
+    // TODO: currently namespace 1 is hardcoded
     pub fn write(&mut self, data: &impl DmaSlice, mut lba: u64) -> Result<(), Box<dyn Error>> {
         for chunk in data.chunks(2 * 4096) {
             let blocks = (chunk.slice.len() as u64 + 512 - 1) / 512;
@@ -499,11 +499,10 @@ impl NvmeDevice {
 
     pub fn read_copied(
         &mut self,
-        ns_id: u32,
         dest: &mut [u8],
         mut lba: u64,
     ) -> Result<(), Box<dyn Error>> {
-        let ns = *self.namespaces.get(&ns_id).unwrap();
+        let ns = *self.namespaces.get(&1).unwrap();
         for chunk in dest.chunks_mut(128 * 4096) {
             let blocks = (chunk.len() as u64 + ns.block_size - 1) / ns.block_size;
             self.namespace_io(1, blocks, lba, self.buffer.phys as u64, false)?;
