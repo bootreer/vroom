@@ -7,7 +7,7 @@ use std::hint::spin_loop;
 /// Completion queue entry
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Default)]
-#[repr(packed)]
+#[repr(C, packed)]
 pub struct NvmeCompletion {
     /// Command specific
     pub command_specific: u32,

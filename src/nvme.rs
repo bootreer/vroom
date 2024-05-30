@@ -49,7 +49,7 @@ pub(crate) enum NvmeArrayRegs {
 }
 
 // who tf is abbreviating this stuff
-#[repr(packed)]
+#[repr(C, packed)]
 #[derive(Debug, Clone, Copy)]
 #[allow(unused)]
 struct IdentifyNamespaceData {

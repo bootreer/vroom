@@ -1,7 +1,7 @@
 /// NVMe Spec 4.2
 /// Submission queue entry
 #[derive(Clone, Copy, Debug, Default)]
-#[repr(packed)]
+#[repr(C, packed)]
 pub struct NvmeCommand {
     /// Opcode
     pub opcode: u8,
@@ -208,9 +208,7 @@ impl NvmeCommand {
             cdw13: 0,
             cdw14: 0,
             cdw15: 0,
-
         }
-
     }
 
     pub(crate) fn async_event_req(c_id: u16) -> Self {
@@ -227,11 +225,18 @@ impl NvmeCommand {
             cdw12: 0,
             cdw13: 0,
             cdw14: 0,
-            cdw15: 0
+            cdw15: 0,
         }
     }
 
-    pub(crate) fn get_log_page(c_id: u16, numd: u32, ptr0: u64, ptr1: u64, lid: u8, lpid: u16) -> Self {
+    pub(crate) fn get_log_page(
+        c_id: u16,
+        numd: u32,
+        ptr0: u64,
+        ptr1: u64,
+        lid: u8,
+        lpid: u16,
+    ) -> Self {
         Self {
             c_id,
             d_ptr: [ptr0, ptr1],
@@ -259,6 +264,5 @@ impl NvmeCommand {
             cdw14: 0,
             cdw15: 0,
         }
-
     }
 }
