@@ -3,7 +3,7 @@ vroom is a userspace NVMe driver written in Rust. It aims to be as fast as the S
 
 [My thesis](https://db.in.tum.de/people/sites/ellmann/theses/finished/24/pirhonen_writing_an_nvme_driver_in_rust.pdf) contains some details about the implementation.
 
-# Build instuctions
+# Build instructions
 You will need Rust, as well as its package manager `cargo` which you can install with:
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
